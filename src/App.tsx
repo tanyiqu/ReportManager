@@ -1,4 +1,5 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 type Page = "home" | "daily" | "weekly" | "meeting" | "settings";
@@ -15,6 +16,13 @@ export default function App() {
   const [content, setContent] = useState("");
   const [notice, setNotice] = useState("");
   const label = useMemo(() => navigation.find((item) => item.id === page)?.label, [page]);
+
+  useEffect(() => {
+    // The native window stays hidden until React has mounted, avoiding a blank startup frame.
+    void invoke("show_main_window").catch((error: unknown) => {
+      console.error("无法显示主窗口", error);
+    });
+  }, []);
   const createDaily = () => { setPage("daily"); setEditing(true); setNotice(""); };
   const saveDraft = (event: FormEvent) => { event.preventDefault(); setNotice("草稿已保存。连接本地数据库后将自动持久化到 SQLite。"); };
   return <div className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark">R</span>ReportManager</div><nav aria-label="主导航">{navigation.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => { setPage(item.id); setEditing(false); }}><span>{item.icon}</span>{item.label}</button>)}</nav><div className="sidebar-bottom"><span className="offline-dot" />所有内容仅保存在本机</div></aside><main className="main-content"><header className="topbar"><div><p className="eyebrow">{label}</p><h1>{page === "home" ? "工作记录，一目了然" : label}</h1></div><button className="primary" onClick={createDaily}>＋ 新建今日日报</button></header>{page === "home" && <Home onCreate={createDaily} />}{page === "daily" && (editing ? <DailyEditor title={title} content={content} notice={notice} onTitle={setTitle} onContent={setContent} onSave={saveDraft} /> : <RecordList type="日报" onCreate={createDaily} />)}{page === "weekly" && <RecordList type="周报" onCreate={() => setEditing(true)} />}{page === "meeting" && <RecordList type="例会记录" onCreate={() => setEditing(true)} />}{page === "settings" && <Settings />}</main></div>;
