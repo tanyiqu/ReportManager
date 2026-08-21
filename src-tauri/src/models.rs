@@ -57,5 +57,6 @@ pub struct AppPreferences {
     pub default_page_id: String,
     pub week_start: String,
     pub export_directory: String,
+    pub minimize_to_tray: bool,
     pub menus: Vec<NavigationMenu>,
 }

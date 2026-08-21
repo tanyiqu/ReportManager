@@ -3,7 +3,11 @@ mod models;
 
 use database::Database;
 use models::{AppPreferences, NavigationMenu, Record, RecordQuery};
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -12,6 +16,10 @@ use tauri::{
 
 const TRAY_SHOW_WINDOW_ID: &str = "show-main-window";
 const TRAY_QUIT_ID: &str = "quit-application";
+
+/// Runtime copy of the close preference, updated whenever settings are saved.
+/// Keeping it in memory lets the window event apply changes without locking SQLite.
+struct CloseBehavior(AtomicBool);
 
 /// Restores the existing window instead of creating another application instance.
 fn reveal_main_window(app: &AppHandle) {
@@ -100,8 +108,13 @@ fn get_app_preferences(database: State<'_, Database>) -> Result<AppPreferences, 
 fn save_app_preferences(
     preferences: AppPreferences,
     database: State<'_, Database>,
+    close_behavior: State<'_, CloseBehavior>,
 ) -> Result<AppPreferences, String> {
-    database.save_preferences(preferences)
+    let saved = database.save_preferences(preferences)?;
+    close_behavior
+        .0
+        .store(saved.minimize_to_tray, Ordering::Relaxed);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -170,7 +183,13 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let data_dir = portable_data_dir().map_err(std::io::Error::other)?;
-            app.manage(Database::open(data_dir).map_err(std::io::Error::other)?);
+            let database = Database::open(data_dir).map_err(std::io::Error::other)?;
+            let minimize_to_tray = database
+                .preferences()
+                .map_err(std::io::Error::other)?
+                .minimize_to_tray;
+            app.manage(database);
+            app.manage(CloseBehavior(AtomicBool::new(minimize_to_tray)));
             create_system_tray(app.handle())?;
             Ok(())
         })
@@ -181,9 +200,18 @@ pub fn run() {
         ))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Keep the process alive; the tray menu provides the explicit exit action.
-                api.prevent_close();
-                let _ = window.hide();
+                let minimize_to_tray = window
+                    .app_handle()
+                    .state::<CloseBehavior>()
+                    .0
+                    .load(Ordering::Relaxed);
+                if minimize_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    // Closing is an explicit exit when the tray preference is disabled.
+                    window.app_handle().exit(0);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![

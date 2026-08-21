@@ -31,6 +31,9 @@ impl Database {
                 }
             })
             .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(include_str!("../migrations/0003_close_behavior.sql"))
+            .map_err(|error| error.to_string())?;
         Self::seed_navigation(&connection)?;
         Ok(Self(Mutex::new(connection)))
     }
@@ -54,6 +57,7 @@ impl Database {
             ("default_page_id", "home"),
             ("week_start", "monday"),
             ("export_directory", ""),
+            ("minimize_to_tray", "true"),
         ] {
             connection
                 .execute(
@@ -106,6 +110,7 @@ impl Database {
             default_page_id: setting("default_page_id", "home")?,
             week_start: setting("week_start", "monday")?,
             export_directory: setting("export_directory", "")?,
+            minimize_to_tray: setting("minimize_to_tray", "true")? == "true",
             menus,
         })
     }
@@ -123,6 +128,7 @@ impl Database {
             ("default_page_id", preferences.default_page_id.clone()),
             ("week_start", preferences.week_start.clone()),
             ("export_directory", preferences.export_directory.clone()),
+            ("minimize_to_tray", preferences.minimize_to_tray.to_string()),
         ] {
             transaction.execute("INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value]).map_err(|error| error.to_string())?;
         }
