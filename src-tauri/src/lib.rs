@@ -2,7 +2,7 @@ mod database;
 mod models;
 
 use database::Database;
-use models::{Record, RecordQuery};
+use models::{AppPreferences, NavigationMenu, Record, RecordQuery};
 use std::{env, path::PathBuf};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -91,6 +91,35 @@ fn show_main_window(window: WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn get_app_preferences(database: State<'_, Database>) -> Result<AppPreferences, String> {
+    database.preferences()
+}
+
+#[tauri::command]
+fn save_app_preferences(
+    preferences: AppPreferences,
+    database: State<'_, Database>,
+) -> Result<AppPreferences, String> {
+    database.save_preferences(preferences)
+}
+
+#[tauri::command]
+fn create_navigation_menu(
+    menu: NavigationMenu,
+    database: State<'_, Database>,
+) -> Result<AppPreferences, String> {
+    database.create_menu(menu)
+}
+
+#[tauri::command]
+fn delete_navigation_menu(
+    id: String,
+    database: State<'_, Database>,
+) -> Result<AppPreferences, String> {
+    database.delete_menu(id)
+}
+
 /// These commands are the only boundary used by the React UI.
 /// The UI must never access SQLite or construct SQL directly.
 #[tauri::command]
@@ -159,6 +188,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             show_main_window,
+            get_app_preferences,
+            save_app_preferences,
+            create_navigation_menu,
+            delete_navigation_menu,
             list_records,
             get_record,
             save_record,

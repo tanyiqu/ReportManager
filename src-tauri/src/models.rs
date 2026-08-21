@@ -37,3 +37,25 @@ pub struct RecordQuery {
     pub date_to: Option<String>,
     pub tags: Option<Vec<String>>,
 }
+
+/// A user-visible navigation entry. `is_system` protects the fixed Home and
+/// Settings entries from changes that would make the application unusable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigationMenu {
+    pub id: String,
+    pub label: String,
+    pub icon_svg: String,
+    pub sort_order: i64,
+    pub is_system: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPreferences {
+    pub sidebar_collapsed: bool,
+    pub default_page_id: String,
+    pub week_start: String,
+    pub export_directory: String,
+    pub menus: Vec<NavigationMenu>,
+}
