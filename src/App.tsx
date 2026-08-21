@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -6,6 +6,8 @@ type Page = string;
 type NavigationMenu = { id: string; label: string; iconSvg: string; sortOrder: number; isSystem: boolean };
 type Preferences = { sidebarCollapsed: boolean; defaultPageId: string; weekStart: string; exportDirectory: string; minimizeToTray: boolean; menus: NavigationMenu[] };
 type Dialog = "manage" | "add" | "rename" | "icon" | "delete" | null;
+type DropPlacement = "before" | "after";
+type MenuDropTarget = { id: string; placement: DropPlacement };
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const makeIcon = (paths: string) => `<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 const iconChoices = [
@@ -22,6 +24,22 @@ const menuActionIcons = {
   delete: makeIcon('<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/>'),
 };
 const today = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date());
+
+function moveMenu(menus: NavigationMenu[], sourceId: string, target: MenuDropTarget): NavigationMenu[] | null {
+  const source = menus.find((menu) => menu.id === sourceId);
+  const destination = menus.find((menu) => menu.id === target.id);
+  if (!source || !destination || source.isSystem || destination.isSystem || source.id === destination.id) return null;
+
+  const reordered = menus.filter((menu) => menu.id !== sourceId);
+  const targetIndex = reordered.findIndex((menu) => menu.id === target.id);
+  if (targetIndex < 0) return null;
+  // Resolve the insertion point after removing the source so before/after
+  // placement stays correct for both upward and downward moves.
+  reordered.splice(targetIndex + (target.placement === "after" ? 1 : 0), 0, source);
+
+  if (reordered.every((menu, index) => menu.id === menus[index]?.id)) return null;
+  return reordered.map((menu, sortOrder) => ({ ...menu, sortOrder }));
+}
 
 function SvgIcon({ svg }: { svg: string }) { const standaloneSvg = /<svg\b[^>]*\bxmlns=/.test(svg) ? svg : svg.replace(/<svg\b/, `<svg xmlns="${SVG_NAMESPACE}"`); const bytes = new TextEncoder().encode(standaloneSvg); let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte); const image = `url("data:image/svg+xml;base64,${btoa(binary)}")`; return <span className="svg-icon" aria-hidden="true" style={{ WebkitMaskImage: image, maskImage: image }} />; }
 function Toasts({ messages, onDismiss }: { messages: { id: number; message: string }[]; onDismiss: (id: number) => void }) { return <div className="toast-stack" aria-live="polite">{messages.map((toast) => <button className="toast" key={toast.id} role="status" title="点击关闭提示" onClick={() => onDismiss(toast.id)}>{toast.message}</button>)}</div>; }
@@ -44,14 +62,46 @@ function DailyEditor({ title, content, notice, onTitle, onContent, onSave }: { t
 function DialogShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) { return <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onMouseDown={(event) => event.stopPropagation()}><div className="dialog-heading"><h2 id="dialog-title">{title}</h2><button className="dialog-close" onClick={onClose} aria-label="关闭对话框">×</button></div>{children}</section></div>; }
 
 function Settings({ preferences, onPersist, onApplySaved, onNavigate }: { preferences: Preferences; onPersist: (next: Preferences, message?: string) => void; onApplySaved: (next: Preferences, message?: string) => void; onNavigate: (page: Page) => void }) {
-  const [dialog, setDialog] = useState<Dialog>(null); const [newLabel, setNewLabel] = useState(""); const [newIcon, setNewIcon] = useState(iconChoices[1].svg); const [selectedMenu, setSelectedMenu] = useState<NavigationMenu | null>(null); const [draftLabel, setDraftLabel] = useState(""); const [draftIcon, setDraftIcon] = useState(""); const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<Dialog>(null); const [newLabel, setNewLabel] = useState(""); const [newIcon, setNewIcon] = useState(iconChoices[1].svg); const [selectedMenu, setSelectedMenu] = useState<NavigationMenu | null>(null); const [draftLabel, setDraftLabel] = useState(""); const [draftIcon, setDraftIcon] = useState(""); const [draggedId, setDraggedId] = useState<string | null>(null); const [dropTarget, setDropTarget] = useState<MenuDropTarget | null>(null);
+  // Pointer capture keeps move/up events attached to the handle in WebView2,
+  // while refs make the latest drag state available before React re-renders.
+  const draggedIdRef = useRef<string | null>(null); const dropTargetRef = useRef<MenuDropTarget | null>(null);
   const openEditor = (menu: NavigationMenu, mode: "rename" | "icon") => { setSelectedMenu(menu); setDraftLabel(menu.label); setDraftIcon(menu.iconSvg); setDialog(mode); };
   const saveMenu = (changes: Partial<NavigationMenu>, message: string) => { if (!selectedMenu) return; onPersist({ ...preferences, menus: preferences.menus.map((menu) => menu.id === selectedMenu.id ? { ...menu, ...changes } : menu) }, message); setDialog("manage"); };
   const addMenu = () => { const label = newLabel.trim(); if (!label) return; const menu: NavigationMenu = { id: `custom-${crypto.randomUUID()}`, label, iconSvg: newIcon, sortOrder: preferences.menus.length - 1, isSystem: false }; void invoke<Preferences>("create_navigation_menu", { menu }).then((next) => { onApplySaved(next, "菜单已添加"); setNewLabel(""); setDialog("manage"); }).catch((error: unknown) => window.alert(String(error))); };
   const remove = () => { if (!selectedMenu || selectedMenu.isSystem) return; void invoke<Preferences>("delete_navigation_menu", { id: selectedMenu.id }).then((next) => { if (preferences.defaultPageId === selectedMenu.id) onPersist({ ...next, defaultPageId: "home" }, "菜单已删除"); else onApplySaved(next, "菜单已删除"); onNavigate("settings"); setDialog("manage"); }).catch((error: unknown) => window.alert(String(error))); };
-  const reorder = (sourceId: string, targetId: string) => { if (sourceId === targetId) return; const source = preferences.menus.find((menu) => menu.id === sourceId); const target = preferences.menus.find((menu) => menu.id === targetId); if (!source || !target || source.isSystem || target.isSystem) return; const menus = [...preferences.menus]; const from = menus.findIndex((menu) => menu.id === sourceId); const to = menus.findIndex((menu) => menu.id === targetId); menus.splice(from, 1); menus.splice(to, 0, source); onPersist({ ...preferences, menus }, "菜单顺序已更新"); };
+  const clearDropTarget = () => { dropTargetRef.current = null; setDropTarget(null); };
+  const resetDrag = () => { draggedIdRef.current = null; clearDropTarget(); setDraggedId(null); };
+  const updateDropTarget = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-menu-id]");
+    const targetId = row?.dataset.menuId;
+    const target = preferences.menus.find((menu) => menu.id === targetId);
+    if (!row || !target || target.isSystem || target.id === draggedIdRef.current) {
+      clearDropTarget();
+      return;
+    }
+    const bounds = row.getBoundingClientRect();
+    const nextTarget: MenuDropTarget = { id: target.id, placement: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after" };
+    dropTargetRef.current = nextTarget;
+    setDropTarget(nextTarget);
+  };
+  const finishDrag = () => {
+    const sourceId = draggedIdRef.current;
+    const target = dropTargetRef.current;
+    resetDrag();
+    if (!sourceId || !target) return;
+    const menus = moveMenu(preferences.menus, sourceId, target);
+    if (menus) onPersist({ ...preferences, menus }, "菜单顺序已更新");
+  };
+  const startDrag = (event: ReactPointerEvent<HTMLButtonElement>, item: NavigationMenu) => {
+    if (item.isSystem || !event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    draggedIdRef.current = item.id;
+    setDraggedId(item.id);
+  };
   return <div className="page-stack settings-page"><section className="panel settings"><h2>偏好设置</h2><label>启动后默认进入页面<select value={preferences.defaultPageId} onChange={(event) => onPersist({ ...preferences, defaultPageId: event.target.value })}>{preferences.menus.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>界面语言<select defaultValue="zh-CN"><option value="zh-CN">简体中文</option></select></label><label>每周起始日<select value={preferences.weekStart} onChange={(event) => onPersist({ ...preferences, weekStart: event.target.value })}><option value="monday">周一</option><option value="sunday">周日</option></select></label><label>默认导出目录<input value={preferences.exportDirectory} placeholder="尚未设置，导出时选择" onChange={(event) => onPersist({ ...preferences, exportDirectory: event.target.value })} /></label></section><section className="panel menu-settings"><div className="section-heading"><div><h2>菜单管理</h2><p>调整导航菜单的顺序、名称和图标；首页始终置顶，设置始终置底。</p></div><button className="secondary" onClick={() => setDialog("manage")}>菜单管理</button></div></section><section className="panel settings-other"><h2>其他</h2><label className="checkbox-setting"><input type="checkbox" checked={preferences.minimizeToTray} onChange={(event) => onPersist({ ...preferences, minimizeToTray: event.target.checked }, "关闭窗口行为已更新")} /><span><strong>关闭窗口时最小化到系统托盘</strong><small>开启后，点击关闭按钮会隐藏主窗口；关闭后会直接退出程序。</small></span></label></section><section className="panel setting-row"><div><h3>本地数据备份</h3><p>导出全部数据以便备份或迁移。内容不会上传到网络。</p></div><button className="secondary">导出全部数据</button></section>
-    {dialog === "manage" && <DialogShell title="菜单管理" onClose={() => setDialog(null)}><p className="dialog-description">拖动自定义菜单左侧的手柄即可调整顺序，松开后会立即保存。</p><div className="menu-list">{preferences.menus.map((item) => <div className={`menu-row ${draggedId === item.id ? "is-dragging" : ""}`} key={item.id} onDragOver={(event) => { if (!item.isSystem) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } }} onDrop={(event) => { event.preventDefault(); const sourceId = event.dataTransfer.getData("text/plain") || draggedId; if (sourceId) reorder(sourceId, item.id); setDraggedId(null); }}><span className="drag-handle" draggable={!item.isSystem} title={item.isSystem ? "系统菜单不可移动" : "拖动调整顺序"} aria-label={item.isSystem ? "系统菜单不可移动" : "拖动调整顺序"} onDragStart={(event) => { if (item.isSystem) return; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDraggedId(item.id); }} onDragEnd={() => setDraggedId(null)}>⠿</span><SvgIcon svg={item.iconSvg} /><span className="menu-row-label">{item.label}</span><div className="menu-actions"><button className="icon-button" title="重命名菜单" aria-label="重命名菜单" onClick={() => openEditor(item, "rename")}><SvgIcon svg={menuActionIcons.rename} /></button><button className="icon-button" title="修改菜单图标" aria-label="修改菜单图标" onClick={() => openEditor(item, "icon")}><SvgIcon svg={menuActionIcons.changeIcon} /></button><button className="icon-button danger-icon" title={item.isSystem ? "首页与设置不可删除" : "删除菜单"} aria-label={item.isSystem ? "首页与设置不可删除" : "删除菜单"} disabled={item.isSystem} {...(!item.isSystem ? { onClick: () => { setSelectedMenu(item); setDialog("delete"); } } : {})}><SvgIcon svg={menuActionIcons.delete} /></button></div></div>)}</div><button className="secondary add-menu-button" onClick={() => setDialog("add")}>＋ 添加菜单</button></DialogShell>}
+    {dialog === "manage" && <DialogShell title="菜单管理" onClose={() => { resetDrag(); setDialog(null); }}><p className="dialog-description">拖动自定义菜单左侧的手柄即可调整顺序，松开后会立即保存。</p><div className="menu-list" onPointerLeave={clearDropTarget}>{preferences.menus.map((item) => { const dropClass = dropTarget?.id === item.id ? `is-drop-${dropTarget.placement}` : ""; return <div className={`menu-row ${draggedId === item.id ? "is-dragging" : ""} ${dropClass}`} data-menu-id={item.id} key={item.id}><button type="button" className="drag-handle" disabled={item.isSystem} title={item.isSystem ? "系统菜单不可移动" : "拖动调整顺序"} aria-label={item.isSystem ? "系统菜单不可移动" : `拖动“${item.label}”调整顺序`} onPointerDown={(event) => startDrag(event, item)} onPointerMove={updateDropTarget} onPointerUp={finishDrag} onPointerCancel={resetDrag} onPointerLeave={clearDropTarget}>⠿</button><SvgIcon svg={item.iconSvg} /><span className="menu-row-label">{item.label}</span><div className="menu-actions"><button className="icon-button" title="重命名菜单" aria-label="重命名菜单" onClick={() => openEditor(item, "rename")}><SvgIcon svg={menuActionIcons.rename} /></button><button className="icon-button" title="修改菜单图标" aria-label="修改菜单图标" onClick={() => openEditor(item, "icon")}><SvgIcon svg={menuActionIcons.changeIcon} /></button><button className="icon-button danger-icon" title={item.isSystem ? "首页与设置不可删除" : "删除菜单"} aria-label={item.isSystem ? "首页与设置不可删除" : "删除菜单"} disabled={item.isSystem} {...(!item.isSystem ? { onClick: () => { setSelectedMenu(item); setDialog("delete"); } } : {})}><SvgIcon svg={menuActionIcons.delete} /></button></div></div>; })}</div><button className="secondary add-menu-button" onClick={() => setDialog("add")}>＋ 添加菜单</button></DialogShell>}
     {dialog === "add" && <DialogShell title="添加菜单" onClose={() => setDialog("manage")}><p className="dialog-description">新菜单会添加在“设置”菜单之前。</p><label className="dialog-field">菜单名称<input value={newLabel} onChange={(event) => setNewLabel(event.target.value)} placeholder="例如：客户项目" autoFocus /></label><label className="dialog-field">菜单图标<select value={newIcon} onChange={(event) => setNewIcon(event.target.value)}>{iconChoices.map((choice) => <option key={choice.name} value={choice.svg}>{choice.name}</option>)}</select></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" disabled={!newLabel.trim()} onClick={addMenu}>添加菜单</button></div></DialogShell>}
     {dialog === "rename" && selectedMenu && <DialogShell title="重命名菜单" onClose={() => setDialog("manage")}><label className="dialog-field">新名称<input value={draftLabel} onChange={(event) => setDraftLabel(event.target.value)} autoFocus /></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" disabled={!draftLabel.trim()} onClick={() => saveMenu({ label: draftLabel.trim() }, "菜单名称已更新")}>保存</button></div></DialogShell>}
     {dialog === "icon" && selectedMenu && <DialogShell title="修改菜单图标" onClose={() => setDialog("manage")}><label className="dialog-field">菜单图标<select value={draftIcon} onChange={(event) => setDraftIcon(event.target.value)} autoFocus>{iconChoices.map((choice) => <option key={choice.name} value={choice.svg}>{choice.name}</option>)}</select></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" onClick={() => saveMenu({ iconSvg: draftIcon }, "菜单图标已更新")}>保存</button></div></DialogShell>}
