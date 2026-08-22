@@ -16,6 +16,7 @@ pub enum RecordStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Record {
     pub id: String,
     pub record_type: RecordType,
@@ -27,15 +28,20 @@ pub struct Record {
     pub status: RecordStatus,
     pub created_at: String,
     pub updated_at: String,
+    pub menu_id: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecordQuery {
+    pub menu_id: Option<String>,
     pub record_type: Option<RecordType>,
     pub keyword: Option<String>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }
 
 /// A user-visible navigation entry. `is_system` protects the fixed Home and
@@ -60,6 +66,8 @@ pub struct AppPreferences {
     pub week_start: String,
     pub export_directory: String,
     pub minimize_to_tray: bool,
+    pub default_report_load_count: u32,
+    pub refresh_report_load_count: u32,
     /// Display order for the per-menu action buttons in Menu Management.
     /// Stored independently from navigation menu ordering.
     pub menu_action_order: Vec<String>,

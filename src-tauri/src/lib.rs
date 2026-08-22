@@ -137,35 +137,22 @@ fn delete_navigation_menu(
 /// The UI must never access SQLite or construct SQL directly.
 #[tauri::command]
 fn list_records(query: RecordQuery, database: State<'_, Database>) -> Result<Vec<Record>, String> {
-    // Read every filter now so the command contract is exercised even before
-    // the parameterized search implementation is added.
-    let RecordQuery {
-        record_type,
-        keyword,
-        date_from,
-        date_to,
-        tags,
-    } = query;
-    let _requested_filters = (record_type, keyword, date_from, date_to, tags);
-    database.ensure_available()?;
-    // TODO: parameterized search across title, content, tags and meeting metadata.
-    Ok(Vec::new())
+    database.list_records(query)
 }
 
 #[tauri::command]
-fn get_record(_id: String, _database: State<'_, Database>) -> Result<Option<Record>, String> {
-    Ok(None)
+fn get_record(id: String, database: State<'_, Database>) -> Result<Option<Record>, String> {
+    database.get_record(&id)
 }
 
 #[tauri::command]
-fn save_record(record: Record, _database: State<'_, Database>) -> Result<Record, String> {
-    // TODO: INSERT ... ON CONFLICT(id) DO UPDATE, preserving created_at.
-    Ok(record)
+fn save_record(record: Record, database: State<'_, Database>) -> Result<Record, String> {
+    database.save_record(record)
 }
 
 #[tauri::command]
-fn delete_record(_id: String, _database: State<'_, Database>) -> Result<(), String> {
-    Ok(())
+fn delete_record(id: String, database: State<'_, Database>) -> Result<(), String> {
+    database.delete_record(&id)
 }
 
 #[tauri::command]

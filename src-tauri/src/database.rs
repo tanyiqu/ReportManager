@@ -1,5 +1,7 @@
-use crate::models::{AppPreferences, NavigationMenu};
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::models::{
+    AppPreferences, NavigationMenu, Record, RecordQuery, RecordStatus, RecordType,
+};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use std::{fs, path::PathBuf, sync::Mutex};
 
 /// Owns the application's single SQLite connection.
@@ -38,7 +40,9 @@ impl Database {
         // SQLite reports the expected duplicate-column error; all statements
         // have already completed during the initial successful launch.
         connection
-            .execute_batch(include_str!("../migrations/0004_menu_visibility_and_period.sql"))
+            .execute_batch(include_str!(
+                "../migrations/0004_menu_visibility_and_period.sql"
+            ))
             .or_else(|error| {
                 if error.to_string().contains("duplicate column name") {
                     Ok(())
@@ -50,7 +54,13 @@ impl Database {
         connection
             .execute_batch(include_str!("../migrations/0005_menu_action_order.sql"))
             .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0006_report_workspace_preferences.sql"
+            ))
+            .map_err(|error| error.to_string())?;
         Self::seed_navigation(&connection)?;
+        Self::seed_management_weekly_records(&connection)?;
         Ok(Self(Mutex::new(connection)))
     }
 
@@ -74,7 +84,12 @@ impl Database {
             ("week_start", "monday"),
             ("export_directory", ""),
             ("minimize_to_tray", "true"),
-            ("menu_action_order", "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]"),
+            (
+                "menu_action_order",
+                "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]",
+            ),
+            ("default_report_load_count", "15"),
+            ("refresh_report_load_count", "15"),
         ] {
             connection
                 .execute(
@@ -86,12 +101,54 @@ impl Database {
         Ok(())
     }
 
-    /// Confirms that the managed connection can be acquired and queried.
-    pub fn ensure_available(&self) -> Result<(), String> {
-        let connection = self.0.lock().map_err(|error| error.to_string())?;
-        connection
-            .execute_batch("SELECT 1;")
-            .map_err(|error| error.to_string())
+    /// Adds the requested twenty rolling weekly samples to the existing
+    /// management-weekly menu. The historic `weekly` id is the compatible
+    /// fallback when the user has not renamed that menu yet.
+    fn seed_management_weekly_records(connection: &Connection) -> Result<(), String> {
+        let menu_id = connection
+            .query_row(
+                "SELECT id FROM navigation_menus WHERE label = '管理层周报' LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| "weekly".to_string());
+        let current_week_start: String = connection
+            .query_row("SELECT date('now', 'localtime', '-' || ((CAST(strftime('%w', 'now', 'localtime') AS INTEGER) + 6) % 7) || ' days')", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        for index in 0..20_i64 {
+            let offset = format!("-{} days", index * 7);
+            let (start, end, week): (String, String, String) = connection
+                .query_row(
+                    "SELECT date(?1, ?2), date(?1, ?2, '+6 days'), strftime('%V', date(?1, ?2), '+3 days')",
+                    params![current_week_start, offset],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            let format_date = |value: &str| {
+                let parts = value.split('-').collect::<Vec<_>>();
+                format!(
+                    "{}年{}月{}日",
+                    parts[0],
+                    parts[1].trim_start_matches('0'),
+                    parts[2].trim_start_matches('0')
+                )
+            };
+            let week_number = week.parse::<u32>().unwrap_or(0);
+            let content = format!(
+                "{} - {}，第{}周",
+                format_date(&start),
+                format_date(&end),
+                week_number
+            );
+            let id = format!("management-weekly-{start}");
+            connection.execute(
+                "INSERT OR IGNORE INTO records (id, type, record_date, title, content, tags, metadata, status, created_at, updated_at, menu_id) VALUES (?1, 'weekly', ?2, ?3, ?4, '[]', '{}', 'saved', datetime('now', 'localtime'), datetime('now', 'localtime'), ?5)",
+                params![id, start, content, content, menu_id],
+            ).map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn preferences(&self) -> Result<AppPreferences, String> {
@@ -130,6 +187,12 @@ impl Database {
             week_start: setting("week_start", "monday")?,
             export_directory: setting("export_directory", "")?,
             minimize_to_tray: setting("minimize_to_tray", "true")? == "true",
+            default_report_load_count: setting("default_report_load_count", "15")?
+                .parse()
+                .unwrap_or(15),
+            refresh_report_load_count: setting("refresh_report_load_count", "15")?
+                .parse()
+                .unwrap_or(15),
             menu_action_order: Self::normalize_menu_action_order(&setting(
                 "menu_action_order",
                 "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]",
@@ -174,6 +237,20 @@ impl Database {
             ("week_start", preferences.week_start.clone()),
             ("export_directory", preferences.export_directory.clone()),
             ("minimize_to_tray", preferences.minimize_to_tray.to_string()),
+            (
+                "default_report_load_count",
+                preferences
+                    .default_report_load_count
+                    .clamp(1, 100)
+                    .to_string(),
+            ),
+            (
+                "refresh_report_load_count",
+                preferences
+                    .refresh_report_load_count
+                    .clamp(1, 100)
+                    .to_string(),
+            ),
             (
                 "menu_action_order",
                 serde_json::to_string(&Self::normalize_menu_action_order(
@@ -269,5 +346,191 @@ impl Database {
             .map_err(|error| error.to_string())?;
         drop(connection);
         self.preferences()
+    }
+
+    fn record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
+        let record_type = match row.get::<_, String>(1)?.as_str() {
+            "weekly" => RecordType::Weekly,
+            "meeting" => RecordType::Meeting,
+            _ => RecordType::Daily,
+        };
+        let status = if row.get::<_, String>(7)? == "saved" {
+            RecordStatus::Saved
+        } else {
+            RecordStatus::Draft
+        };
+        Ok(Record {
+            id: row.get(0)?,
+            record_type,
+            record_date: row.get(2)?,
+            title: row.get(3)?,
+            content: row.get(4)?,
+            tags: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+            metadata: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+            status,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+            menu_id: row.get(10)?,
+        })
+    }
+
+    pub fn list_records(&self, query: RecordQuery) -> Result<Vec<Record>, String> {
+        let connection = self.0.lock().map_err(|error| error.to_string())?;
+        let mut sql = "SELECT id, type, record_date, title, content, tags, metadata, status, created_at, updated_at, menu_id FROM records WHERE 1 = 1".to_string();
+        let mut values: Vec<Value> = Vec::new();
+        if let Some(menu_id) = query.menu_id {
+            sql.push_str(" AND menu_id = ?");
+            values.push(menu_id.into());
+        }
+        if let Some(record_type) = query.record_type {
+            sql.push_str(" AND type = ?");
+            values.push(
+                match record_type {
+                    RecordType::Daily => "daily",
+                    RecordType::Weekly => "weekly",
+                    RecordType::Meeting => "meeting",
+                }
+                .to_string()
+                .into(),
+            );
+        }
+        if let Some(keyword) = query.keyword.filter(|value| !value.trim().is_empty()) {
+            sql.push_str(" AND (title LIKE ? OR content LIKE ? OR tags LIKE ?)");
+            let pattern = format!("%{}%", keyword.trim());
+            values.extend([
+                pattern.clone().into(),
+                pattern.clone().into(),
+                pattern.into(),
+            ]);
+        }
+        if let Some(date_from) = query.date_from.filter(|value| !value.is_empty()) {
+            sql.push_str(" AND record_date >= ?");
+            values.push(date_from.into());
+        }
+        if let Some(date_to) = query.date_to.filter(|value| !value.is_empty()) {
+            sql.push_str(" AND record_date <= ?");
+            values.push(date_to.into());
+        }
+        if let Some(tags) = query.tags {
+            for tag in tags.into_iter().filter(|value| !value.trim().is_empty()) {
+                sql.push_str(" AND tags LIKE ?");
+                values.push(format!("%{}%", tag.trim()).into());
+            }
+        }
+        sql.push_str(" ORDER BY record_date DESC, updated_at DESC LIMIT ? OFFSET ?");
+        values.push(i64::from(query.limit.unwrap_or(15).clamp(1, 100)).into());
+        values.push(i64::from(query.offset.unwrap_or(0)).into());
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        let records = statement
+            .query_map(params_from_iter(values), Self::record_from_row)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(records)
+    }
+
+    pub fn get_record(&self, id: &str) -> Result<Option<Record>, String> {
+        let connection = self.0.lock().map_err(|error| error.to_string())?;
+        connection.query_row("SELECT id, type, record_date, title, content, tags, metadata, status, created_at, updated_at, menu_id FROM records WHERE id = ?1", [id], Self::record_from_row).optional().map_err(|error| error.to_string())
+    }
+
+    pub fn save_record(&self, record: Record) -> Result<Record, String> {
+        let connection = self.0.lock().map_err(|error| error.to_string())?;
+        let record_type = match record.record_type {
+            RecordType::Daily => "daily",
+            RecordType::Weekly => "weekly",
+            RecordType::Meeting => "meeting",
+        };
+        let status = match record.status {
+            RecordStatus::Draft => "draft",
+            RecordStatus::Saved => "saved",
+        };
+        connection.execute("INSERT INTO records (id, type, record_date, title, content, tags, metadata, status, created_at, updated_at, menu_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET type=excluded.type, record_date=excluded.record_date, title=excluded.title, content=excluded.content, tags=excluded.tags, metadata=excluded.metadata, status=excluded.status, updated_at=excluded.updated_at, menu_id=excluded.menu_id", params![record.id, record_type, record.record_date, record.title, record.content, serde_json::to_string(&record.tags).map_err(|error| error.to_string())?, record.metadata.to_string(), status, record.created_at, record.updated_at, record.menu_id]).map_err(|error| error.to_string())?;
+        drop(connection);
+        self.get_record(&record.id)?
+            .ok_or_else(|| "保存后无法读取报告。".to_string())
+    }
+
+    /// Permanently removes one report after the UI has obtained confirmation.
+    pub fn delete_record(&self, id: &str) -> Result<(), String> {
+        let connection = self.0.lock().map_err(|error| error.to_string())?;
+        connection
+            .execute("DELETE FROM records WHERE id = ?1", [id])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_database() -> Database {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        Database::open(std::env::temp_dir().join(format!("report-manager-test-{suffix}")))
+            .expect("open test database")
+    }
+
+    fn weekly_query(limit: u32, offset: u32) -> RecordQuery {
+        RecordQuery {
+            menu_id: Some("weekly".to_string()),
+            record_type: None,
+            keyword: None,
+            date_from: None,
+            date_to: None,
+            tags: None,
+            limit: Some(limit),
+            offset: Some(offset),
+        }
+    }
+
+    #[test]
+    fn seeds_and_pages_twenty_weekly_reports() {
+        let database = test_database();
+        let first_page = database
+            .list_records(weekly_query(15, 0))
+            .expect("first page");
+        let second_page = database
+            .list_records(weekly_query(15, 15))
+            .expect("second page");
+        assert_eq!(first_page.len(), 15);
+        assert_eq!(second_page.len(), 5);
+        assert!(first_page[0].content.contains("，第"));
+        assert!(first_page[0].record_date > first_page[1].record_date);
+    }
+
+    #[test]
+    fn saves_and_searches_markdown_content() {
+        let database = test_database();
+        let mut record = database
+            .list_records(weekly_query(1, 0))
+            .expect("record")
+            .remove(0);
+        record.content = "## 已完成\n\n- 分页查询".to_string();
+        record.updated_at = "2026-08-22T12:00:00Z".to_string();
+        database.save_record(record).expect("save record");
+        let mut query = weekly_query(15, 0);
+        query.keyword = Some("分页查询".to_string());
+        let matches = database.list_records(query).expect("search record");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].content.starts_with("## 已完成"));
+    }
+
+    #[test]
+    fn deletes_a_saved_record() {
+        let database = test_database();
+        let id = database
+            .list_records(weekly_query(1, 0))
+            .expect("record")
+            .remove(0)
+            .id;
+        database.delete_record(&id).expect("delete record");
+        assert!(database.get_record(&id).expect("get record").is_none());
     }
 }
