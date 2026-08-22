@@ -48,6 +48,8 @@ pub struct NavigationMenu {
     pub icon_svg: String,
     pub sort_order: i64,
     pub is_system: bool,
+    pub is_hidden: bool,
+    pub report_period: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,5 +60,8 @@ pub struct AppPreferences {
     pub week_start: String,
     pub export_directory: String,
     pub minimize_to_tray: bool,
+    /// Display order for the per-menu action buttons in Menu Management.
+    /// Stored independently from navigation menu ordering.
+    pub menu_action_order: Vec<String>,
     pub menus: Vec<NavigationMenu>,
 }

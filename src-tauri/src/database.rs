@@ -34,6 +34,22 @@ impl Database {
         connection
             .execute_batch(include_str!("../migrations/0003_close_behavior.sql"))
             .map_err(|error| error.to_string())?;
+        // The migration is executed on each startup. Once its columns exist,
+        // SQLite reports the expected duplicate-column error; all statements
+        // have already completed during the initial successful launch.
+        connection
+            .execute_batch(include_str!("../migrations/0004_menu_visibility_and_period.sql"))
+            .or_else(|error| {
+                if error.to_string().contains("duplicate column name") {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(include_str!("../migrations/0005_menu_action_order.sql"))
+            .map_err(|error| error.to_string())?;
         Self::seed_navigation(&connection)?;
         Ok(Self(Mutex::new(connection)))
     }
@@ -58,6 +74,7 @@ impl Database {
             ("week_start", "monday"),
             ("export_directory", ""),
             ("minimize_to_tray", "true"),
+            ("menu_action_order", "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]"),
         ] {
             connection
                 .execute(
@@ -90,7 +107,7 @@ impl Database {
                 .map_err(|error| error.to_string())
                 .map(|value| value.unwrap_or_else(|| fallback.to_string()))
         };
-        let mut statement = connection.prepare("SELECT id, label, icon_svg, sort_order, is_system FROM navigation_menus ORDER BY sort_order")
+        let mut statement = connection.prepare("SELECT id, label, icon_svg, sort_order, is_system, is_hidden, report_period FROM navigation_menus ORDER BY sort_order")
             .map_err(|error| error.to_string())?;
         let menus = statement
             .query_map([], |row| {
@@ -100,6 +117,8 @@ impl Database {
                     icon_svg: row.get(2)?,
                     sort_order: row.get(3)?,
                     is_system: row.get::<_, i64>(4)? != 0,
+                    is_hidden: row.get::<_, i64>(5)? != 0,
+                    report_period: row.get(6)?,
                 })
             })
             .map_err(|error| error.to_string())?
@@ -111,8 +130,34 @@ impl Database {
             week_start: setting("week_start", "monday")?,
             export_directory: setting("export_directory", "")?,
             minimize_to_tray: setting("minimize_to_tray", "true")? == "true",
+            menu_action_order: Self::normalize_menu_action_order(&setting(
+                "menu_action_order",
+                "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]",
+            )?),
             menus,
         })
+    }
+
+    /// Keeps persisted action button preferences forwards-compatible and safe
+    /// when an older database contains malformed or incomplete JSON.
+    fn normalize_menu_action_order(value: &str) -> Vec<String> {
+        const DEFAULT: [&str; 5] = ["visibility", "period", "rename", "icon", "delete"];
+        let saved = serde_json::from_str::<Vec<String>>(value).unwrap_or_default();
+        let mut normalized = saved
+            .into_iter()
+            .filter(|item| DEFAULT.contains(&item.as_str()))
+            .fold(Vec::new(), |mut result, item| {
+                if !result.contains(&item) {
+                    result.push(item);
+                }
+                result
+            });
+        for item in DEFAULT {
+            if !normalized.iter().any(|saved| saved == item) {
+                normalized.push(item.to_string());
+            }
+        }
+        normalized
     }
 
     pub fn save_preferences(&self, preferences: AppPreferences) -> Result<AppPreferences, String> {
@@ -129,6 +174,14 @@ impl Database {
             ("week_start", preferences.week_start.clone()),
             ("export_directory", preferences.export_directory.clone()),
             ("minimize_to_tray", preferences.minimize_to_tray.to_string()),
+            (
+                "menu_action_order",
+                serde_json::to_string(&Self::normalize_menu_action_order(
+                    &serde_json::to_string(&preferences.menu_action_order)
+                        .map_err(|error| error.to_string())?,
+                ))
+                .map_err(|error| error.to_string())?,
+            ),
         ] {
             transaction.execute("INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value]).map_err(|error| error.to_string())?;
         }
@@ -144,17 +197,17 @@ impl Database {
         let mut order = 1_i64;
         for menu in &preferences.menus {
             if menu.id == "home" {
-                transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, sort_order = 0 WHERE id = 'home'", params![menu.label, menu.icon_svg]).map_err(|error| error.to_string())?;
+                transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, is_hidden = 0, sort_order = 0 WHERE id = 'home'", params![menu.label, menu.icon_svg]).map_err(|error| error.to_string())?;
             } else if menu.id == "settings" {
                 continue;
             } else {
-                transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, sort_order = ?3 WHERE id = ?4", params![menu.label, menu.icon_svg, order, menu.id]).map_err(|error| error.to_string())?;
+                transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, is_hidden = ?3, report_period = ?4, sort_order = ?5 WHERE id = ?6", params![menu.label, menu.icon_svg, menu.is_hidden, menu.report_period, order, menu.id]).map_err(|error| error.to_string())?;
                 order += 1;
             }
         }
         let settings = preferences.menus.iter().find(|menu| menu.id == "settings");
         if let Some(menu) = settings {
-            transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, sort_order = ?3 WHERE id = 'settings'", params![menu.label, menu.icon_svg, order]).map_err(|error| error.to_string())?;
+            transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, is_hidden = 0, sort_order = ?3 WHERE id = 'settings'", params![menu.label, menu.icon_svg, order]).map_err(|error| error.to_string())?;
         } else {
             transaction
                 .execute(
@@ -188,7 +241,7 @@ impl Database {
                 [],
             )
             .map_err(|error| error.to_string())?;
-        connection.execute("INSERT INTO navigation_menus (id, label, icon_svg, sort_order, is_system) VALUES (?1, ?2, ?3, ?4, 0)", params![menu.id, menu.label, menu.icon_svg, order]).map_err(|error| error.to_string())?;
+        connection.execute("INSERT INTO navigation_menus (id, label, icon_svg, sort_order, is_system, is_hidden, report_period) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)", params![menu.id, menu.label, menu.icon_svg, order, menu.is_hidden, menu.report_period]).map_err(|error| error.to_string())?;
         drop(connection);
         self.preferences()
     }
