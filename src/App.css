@@ -29,3 +29,23 @@
 /* Date changes are staged until the user explicitly applies them. */
 .date-filter-actions{position:relative;display:flex;justify-content:flex-end;gap:8px;padding-top:2px}.date-filter-actions .secondary,.date-filter-actions .primary{padding:7px 9px;font-size:12px}.date-validation{display:block;width:max-content;max-width:100%;margin-top:8px;padding:6px 9px;border-radius:6px;background:#fff1f1;color:#bb3030;font-size:12px;font-weight:600;box-shadow:0 4px 12px #8b263022}.date-filter-actions .date-validation{position:absolute;right:0;top:100%;white-space:nowrap}.record-date-button{display:block;margin-top:5px;padding:0;border:0;background:transparent;color:#8996a6;font-size:12px}.record-date-button:hover,.record-date-button:focus-visible{color:#3478f6;text-decoration:underline;cursor:pointer;outline:0}
 .date-filter-picker{width:100%}.date-popover .semi-input-wrapper{width:100%}.date-popover .semi-datepicker{width:100%}
+
+/* Style the complete Semi Select root. The selection and arrow are siblings, so styling
+   only the inner selection exposes Semi's grey root and can create an inner scrollbar. */
+.settings>label>input,.dialog-field>input{height:40px}
+.settings-select.semi-select{height:40px;min-height:40px;max-height:40px;overflow:hidden;padding:0;border:1px solid #d6dfeb;border-radius:8px;background:#fff;font-weight:400;transition:border-color .15s,box-shadow .15s,background-color .15s}
+.settings-select.semi-select:hover{border-color:#aebdd0;background:#fbfcfe}
+.settings-select.semi-select:focus,.settings-select.semi-select-open,.settings-select.semi-select-focus{border-color:#6d9ef5;background:#fff;box-shadow:0 0 0 3px #e8f0ff}
+.settings-select.semi-select:active,.settings-select.semi-select-open:active,.settings-select.semi-select-focus:active{background:#fff}
+.settings-select .semi-select-selection{height:100%;min-height:0;margin-left:12px;padding:0;border:0;background:transparent;color:#26364b;box-shadow:none}
+.settings-select .semi-select-selection:hover{border:0;background:transparent}
+.settings-select.semi-select-focus .semi-select-selection,.settings-select.semi-select-open .semi-select-selection{border:0;background:transparent;box-shadow:none}
+.settings-select .semi-select-selection-text{color:#26364b;font-size:14px;line-height:20px}
+.settings-select .semi-select-arrow{width:40px;color:#718096}
+.semi-select-option-list-wrapper{padding:6px;border:1px solid #d6dfeb;border-radius:8px;background:#fff;box-shadow:0 10px 24px #18212f18;scrollbar-width:none;-ms-overflow-style:none}
+.semi-select-option-list-wrapper::-webkit-scrollbar,.semi-select-option-list-wrapper .semi-select-option-list::-webkit-scrollbar,.semi-select-option-list-wrapper .semi-virtual-list::-webkit-scrollbar,.semi-select-option-list-wrapper .semi-virtual-list-scrollbar::-webkit-scrollbar{display:none;width:0;height:0}
+.semi-select-option-list-wrapper .semi-select-option-list,.semi-select-option-list-wrapper .semi-virtual-list,.semi-select-option-list-wrapper .semi-virtual-list-scrollbar{scrollbar-width:none;-ms-overflow-style:none}
+.semi-select-option-list-wrapper .semi-select-option{min-height:34px;margin:1px 0;padding:7px 10px;border-radius:6px;color:#40516a;font-size:14px;line-height:20px}
+.semi-select-option-list-wrapper .semi-select-option:hover,.semi-select-option-list-wrapper .semi-select-option-focused{background:#f3f7fc;color:#26364b}
+.semi-select-option-list-wrapper .semi-select-option-selected{background:#eef5ff;color:#266bdc;font-weight:600}
+.semi-select-option-list-wrapper .semi-select-option-selected:hover,.semi-select-option-list-wrapper .semi-select-option-selected.semi-select-option-focused{background:#e2efff;color:#2367df}
