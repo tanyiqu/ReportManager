@@ -267,7 +267,7 @@ impl Database {
         // safe under the unique index.
         transaction
             .execute(
-                "UPDATE navigation_menus SET sort_order = -sort_order - 1 WHERE is_system = 0",
+                "UPDATE navigation_menus SET sort_order = -sort_order - 1 WHERE id NOT IN ('home', 'settings')",
                 [],
             )
             .map_err(|error| error.to_string())?;
