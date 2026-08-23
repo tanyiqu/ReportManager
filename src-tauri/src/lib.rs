@@ -3,23 +3,198 @@ mod models;
 
 use database::Database;
 use models::{AppPreferences, NavigationMenu, Record, RecordQuery};
+use serde::{Deserialize, Serialize};
 use std::{
-    env,
-    path::PathBuf,
+    env, fs,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, WebviewWindow, WindowEvent,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow, Window, WindowEvent,
 };
 
 const TRAY_SHOW_WINDOW_ID: &str = "show-main-window";
 const TRAY_QUIT_ID: &str = "quit-application";
+const WINDOW_CONFIG_FILE: &str = "config.json";
+const LEGACY_WINDOW_SIZE_CONFIG_FILE: &str = "window-size.json";
+const MIN_WINDOW_WIDTH: f64 = 980.0;
+const MIN_WINDOW_HEIGHT: f64 = 650.0;
 
 /// Runtime copy of the close preference, updated whenever settings are saved.
 /// Keeping it in memory lets the window event apply changes without locking SQLite.
 struct CloseBehavior(AtomicBool);
+
+/// Startup-only window configuration kept independently from SQLite.
+///
+/// Size is logical so it remains appropriate after a display scale-factor
+/// change. Position is physical because desktop coordinates are reported by
+/// the operating system in physical pixels.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowConfig {
+    width: f64,
+    height: f64,
+    #[serde(default)]
+    x: Option<i32>,
+    #[serde(default)]
+    y: Option<i32>,
+}
+
+impl WindowConfig {
+    fn is_valid(self) -> bool {
+        self.width.is_finite()
+            && self.height.is_finite()
+            && self.width >= MIN_WINDOW_WIDTH
+            && self.height >= MIN_WINDOW_HEIGHT
+    }
+}
+
+/// Stores and migrates the main window configuration beside the portable
+/// database. This is available before SQLite and before the frontend starts.
+struct WindowConfigStore {
+    path: PathBuf,
+    legacy_path: PathBuf,
+}
+
+impl WindowConfigStore {
+    fn new(data_dir: &Path) -> Self {
+        Self {
+            path: data_dir.join(WINDOW_CONFIG_FILE),
+            legacy_path: data_dir.join(LEGACY_WINDOW_SIZE_CONFIG_FILE),
+        }
+    }
+
+    fn read(&self) -> Option<WindowConfig> {
+        let raw = fs::read_to_string(&self.path).ok()?;
+        let config = serde_json::from_str::<WindowConfig>(&raw).ok()?;
+        config.is_valid().then_some(config)
+    }
+
+    /// Moves the former size-only file to the unified configuration on first
+    /// launch after upgrade. An invalid legacy file is deliberately ignored.
+    fn migrate_legacy(&self) -> Option<WindowConfig> {
+        let raw = fs::read_to_string(&self.legacy_path).ok()?;
+        let config = serde_json::from_str::<WindowConfig>(&raw).ok()?;
+        if !config.is_valid() {
+            return None;
+        }
+        if self.save(config) {
+            if let Err(error) = fs::remove_file(&self.legacy_path) {
+                eprintln!("删除旧窗口配置失败: {error}");
+            }
+        }
+        Some(config)
+    }
+
+    fn save(&self, config: WindowConfig) -> bool {
+        if !config.is_valid() {
+            return false;
+        }
+        let content = match serde_json::to_vec_pretty(&config) {
+            Ok(content) => content,
+            Err(error) => {
+                eprintln!("序列化窗口配置失败: {error}");
+                return false;
+            }
+        };
+        if let Err(error) = fs::write(&self.path, content) {
+            eprintln!("保存窗口配置失败: {error}");
+            return false;
+        }
+        true
+    }
+
+    fn save_config(&self, logical_size: LogicalSize<f64>, position: Option<PhysicalPosition<i32>>) {
+        let _ = self.save(WindowConfig {
+            width: logical_size.width,
+            height: logical_size.height,
+            x: position.map(|value| value.x),
+            y: position.map(|value| value.y),
+        });
+    }
+
+    fn save_current_webview_window(&self, window: &WebviewWindow) {
+        if window.is_maximized().unwrap_or(false) {
+            return;
+        }
+        let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let Ok(size) = window.inner_size() else {
+            return;
+        };
+        let logical_size = size.to_logical::<f64>(scale_factor);
+        let position = window.outer_position().ok();
+        self.save_config(logical_size, position);
+    }
+
+    fn save_current_window(&self, window: &Window) {
+        if window.is_maximized().unwrap_or(false) {
+            return;
+        }
+        let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let Ok(size) = window.inner_size() else {
+            return;
+        };
+        self.save_config(
+            size.to_logical::<f64>(scale_factor),
+            window.outer_position().ok(),
+        );
+    }
+
+    fn restore(&self, window: &WebviewWindow) {
+        let config = self.read().or_else(|| self.migrate_legacy());
+        let config = config.unwrap_or(WindowConfig {
+            width: MIN_WINDOW_WIDTH.max(1180.0),
+            height: MIN_WINDOW_HEIGHT.max(760.0),
+            x: None,
+            y: None,
+        });
+
+        let _ = window.set_size(LogicalSize::new(config.width, config.height));
+        let position = match (config.x, config.y) {
+            (Some(x), Some(y)) if self.position_is_visible(window, x, y) => {
+                PhysicalPosition::new(x, y)
+            }
+            _ => self.center_on_primary_monitor(window),
+        };
+        let _ = window.set_position(position);
+
+        // First launch and legacy migrations both immediately create the new
+        // unified file. Persist the actual centered position for next startup.
+        self.save_current_webview_window(window);
+    }
+
+    fn position_is_visible(&self, window: &WebviewWindow, x: i32, y: i32) -> bool {
+        window.available_monitors().map_or(false, |monitors| {
+            monitors.iter().any(|monitor| {
+                let origin = monitor.position();
+                let size = monitor.size();
+                x >= origin.x
+                    && x < origin.x.saturating_add(size.width as i32)
+                    && y >= origin.y
+                    && y < origin.y.saturating_add(size.height as i32)
+            })
+        })
+    }
+
+    fn center_on_primary_monitor(&self, window: &WebviewWindow) -> PhysicalPosition<i32> {
+        let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let size = window
+            .inner_size()
+            .unwrap_or_else(|_| LogicalSize::new(1180.0, 760.0).to_physical(scale_factor));
+        let monitor = window.primary_monitor().ok().flatten();
+        let Some(monitor) = monitor else {
+            return PhysicalPosition::new(0, 0);
+        };
+        let origin = monitor.position();
+        let monitor_size = monitor.size();
+        PhysicalPosition::new(
+            origin.x + (monitor_size.width.saturating_sub(size.width) / 2) as i32,
+            origin.y + (monitor_size.height.saturating_sub(size.height) / 2) as i32,
+        )
+    }
+}
 
 /// Restores the existing window instead of creating another application instance.
 fn reveal_main_window(app: &AppHandle) {
@@ -30,6 +205,14 @@ fn reveal_main_window(app: &AppHandle) {
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+}
+
+/// Saves the current main-window geometry before an explicit application exit.
+fn save_main_window_config(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        app.state::<WindowConfigStore>()
+            .save_current_webview_window(&window);
+    }
 }
 
 /// Creates the persistent tray controls used while the main window is hidden.
@@ -49,7 +232,10 @@ fn create_system_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_SHOW_WINDOW_ID => reveal_main_window(app),
-            TRAY_QUIT_ID => app.exit(0),
+            TRAY_QUIT_ID => {
+                save_main_window_config(app);
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| match event {
@@ -170,13 +356,17 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let data_dir = portable_data_dir().map_err(std::io::Error::other)?;
-            let database = Database::open(data_dir).map_err(std::io::Error::other)?;
+            let database = Database::open(data_dir.clone()).map_err(std::io::Error::other)?;
             let minimize_to_tray = database
                 .preferences()
                 .map_err(std::io::Error::other)?
                 .minimize_to_tray;
             app.manage(database);
             app.manage(CloseBehavior(AtomicBool::new(minimize_to_tray)));
+            app.manage(WindowConfigStore::new(&data_dir));
+            if let Some(window) = app.get_webview_window("main") {
+                app.state::<WindowConfigStore>().restore(&window);
+            }
             create_system_tray(app.handle())?;
             Ok(())
         })
@@ -186,19 +376,39 @@ pub fn run() {
             },
         ))
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let minimize_to_tray = window
-                    .app_handle()
-                    .state::<CloseBehavior>()
-                    .0
-                    .load(Ordering::Relaxed);
-                if minimize_to_tray {
-                    api.prevent_close();
-                    let _ = window.hide();
-                } else {
-                    // Closing is an explicit exit when the tray preference is disabled.
-                    window.app_handle().exit(0);
+            match event {
+                WindowEvent::Resized(_) if window.label() == "main" => {
+                    // Do not replace the user's normal size with the monitor's
+                    // maximized dimensions. The last restored size remains.
+                    if window.is_maximized().unwrap_or(false) {
+                        return;
+                    }
+                    window
+                        .app_handle()
+                        .state::<WindowConfigStore>()
+                        .save_current_window(window);
                 }
+                WindowEvent::CloseRequested { api, .. } => {
+                    // Persist the last visible desktop position before either
+                    // hiding to the tray or exiting the application.
+                    window
+                        .app_handle()
+                        .state::<WindowConfigStore>()
+                        .save_current_window(window);
+                    let minimize_to_tray = window
+                        .app_handle()
+                        .state::<CloseBehavior>()
+                        .0
+                        .load(Ordering::Relaxed);
+                    if minimize_to_tray {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        // Closing is an explicit exit when the tray preference is disabled.
+                        window.app_handle().exit(0);
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
