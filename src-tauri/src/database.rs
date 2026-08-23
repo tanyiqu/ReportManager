@@ -59,6 +59,9 @@ impl Database {
                 "../migrations/0006_report_workspace_preferences.sql"
             ))
             .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(include_str!("../migrations/0007_editor_font_scale.sql"))
+            .map_err(|error| error.to_string())?;
         Self::seed_navigation(&connection)?;
         Self::seed_management_weekly_records(&connection)?;
         Ok(Self(Mutex::new(connection)))
@@ -90,6 +93,7 @@ impl Database {
             ),
             ("default_report_load_count", "15"),
             ("refresh_report_load_count", "15"),
+            ("editor_font_scale", "1"),
         ] {
             connection
                 .execute(
@@ -193,6 +197,10 @@ impl Database {
             refresh_report_load_count: setting("refresh_report_load_count", "15")?
                 .parse()
                 .unwrap_or(15),
+            editor_font_scale: setting("editor_font_scale", "1")?
+                .parse::<f64>()
+                .unwrap_or(1.0)
+                .clamp(0.8, 1.5),
             menu_action_order: Self::normalize_menu_action_order(&setting(
                 "menu_action_order",
                 "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]",
@@ -250,6 +258,10 @@ impl Database {
                     .refresh_report_load_count
                     .clamp(1, 100)
                     .to_string(),
+            ),
+            (
+                "editor_font_scale",
+                preferences.editor_font_scale.clamp(0.8, 1.5).to_string(),
             ),
             (
                 "menu_action_order",

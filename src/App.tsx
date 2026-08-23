@@ -9,7 +9,7 @@ type ReportPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly" | "c
 type MenuAction = "visibility" | "period" | "rename" | "icon" | "delete";
 type RecordType = "daily" | "weekly" | "meeting";
 type NavigationMenu = { id: string; label: string; iconSvg: string; sortOrder: number; isSystem: boolean; isHidden: boolean; reportPeriod: ReportPeriod };
-type Preferences = { sidebarCollapsed: boolean; defaultPageId: string; weekStart: string; exportDirectory: string; minimizeToTray: boolean; defaultReportLoadCount: number; refreshReportLoadCount: number; menuActionOrder: MenuAction[]; menus: NavigationMenu[] };
+type Preferences = { sidebarCollapsed: boolean; defaultPageId: string; weekStart: string; exportDirectory: string; minimizeToTray: boolean; defaultReportLoadCount: number; refreshReportLoadCount: number; editorFontScale: number; menuActionOrder: MenuAction[]; menus: NavigationMenu[] };
 type ReportRecord = { id: string; recordType: RecordType; recordDate: string; title: string; content: string; tags: string[]; metadata: Record<string, unknown>; status: "draft" | "saved"; createdAt: string; updatedAt: string; menuId: string };
 type Dialog = "manage" | "add" | "rename" | "icon" | "period" | "delete" | "sort" | null;
 
@@ -68,9 +68,10 @@ function MenuActions({ item, order, toggle, edit, remove }: { item: NavigationMe
 }
 
 const vditorCdn = new URL("vditor", document.baseURI).href.replace(/\/$/, "");
+const clampEditorFontScale = (value: number) => Math.min(1.5, Math.max(.8, Number(value.toFixed(1))));
 
 function VditorEditor({ record, change, save }: { record: ReportRecord; change: (value: string) => void; save: () => void }) {
-  const host = useRef<HTMLDivElement>(null); const wrapper = useRef<HTMLDivElement>(null); const editor = useRef<Vditor | null>(null); const loadedRecordId = useRef(""); const recordRef = useRef(record); const changeRef = useRef(change); const saveRef = useRef(save); const [zoom, setZoom] = useState(1);
+  const host = useRef<HTMLDivElement>(null); const wrapper = useRef<HTMLDivElement>(null); const editor = useRef<Vditor | null>(null); const loadedRecordId = useRef(""); const recordRef = useRef(record); const changeRef = useRef(change); const saveRef = useRef(save); const zoomLoaded = useRef(false); const [zoom, setZoom] = useState(1);
   recordRef.current = record; changeRef.current = change; saveRef.current = save;
 
   // Delay construction by one task so React StrictMode can run its development-only
@@ -80,10 +81,14 @@ function VditorEditor({ record, change, save }: { record: ReportRecord; change: 
   // Keep one Vditor instance alive while users move through the report list. This
   // preserves the editor's global resources and resets undo history per report.
   useEffect(() => { if (editor.current?.vditor && loadedRecordId.current !== record.id) { editor.current.setValue(record.content, true); loadedRecordId.current = record.id; } }, [record.id]);
-  useEffect(() => { const element = wrapper.current; if (!element) return; const handleWheel = (event: WheelEvent) => { if (!event.ctrlKey) return; event.preventDefault(); setZoom((value) => Math.min(1.5, Math.max(.8, Number((value + (event.deltaY < 0 ? .1 : -.1)).toFixed(1))))); }; element.addEventListener("wheel", handleWheel, { passive: false }); return () => element.removeEventListener("wheel", handleWheel); }, []);
-  const adjustZoom = (amount: number) => setZoom((value) => Math.min(1.5, Math.max(.8, Number((value + amount).toFixed(1)))));
+  // The scale belongs to app preferences rather than a single report, so every
+  // report menu restores the same readable font size after an app restart.
+  useEffect(() => { let active = true; void invoke<Preferences>("get_app_preferences").then((preferences) => { if (!active) return; zoomLoaded.current = true; setZoom(clampEditorFontScale(preferences.editorFontScale)); }).catch(console.error); return () => { active = false; }; }, []);
+  // Persist only after the wheel settles, avoiding a database write per wheel tick.
+  useEffect(() => { if (!zoomLoaded.current) return; const timer = window.setTimeout(() => { void invoke<Preferences>("get_app_preferences").then((preferences) => invoke("save_app_preferences", { preferences: { ...preferences, editorFontScale: zoom } })).catch(console.error); }, 300); return () => window.clearTimeout(timer); }, [zoom]);
+  useEffect(() => { const element = wrapper.current; if (!element) return; const handleWheel = (event: WheelEvent) => { if (!event.ctrlKey) return; event.preventDefault(); setZoom((value) => clampEditorFontScale(value + (event.deltaY < 0 ? .1 : -.1))); }; element.addEventListener("wheel", handleWheel, { passive: false }); return () => element.removeEventListener("wheel", handleWheel); }, []);
 
-  return <div ref={wrapper} className="vditor-editor" style={{ "--editor-font-scale": zoom } as React.CSSProperties}><div className="editor-accessories"><span>Ctrl+S 保存</span><div className="editor-zoom-controls" aria-label="正文缩放"><button type="button" title="缩小正文（Ctrl+向下滚动）" aria-label="缩小正文" disabled={zoom <= .8} onMouseDown={(event) => event.preventDefault()} onClick={() => adjustZoom(-.1)}><SvgIcon svg={icons.zoomOut} /></button><span aria-label={`当前字号 ${Math.round(zoom * 100)}%`}>{Math.round(zoom * 100)}%</span><button type="button" title="放大正文（Ctrl+向上滚动）" aria-label="放大正文" disabled={zoom >= 1.5} onMouseDown={(event) => event.preventDefault()} onClick={() => adjustZoom(.1)}><SvgIcon svg={icons.zoomIn} /></button></div></div><div ref={host} className="vditor-host" aria-label="报告正文" /></div>;
+  return <div ref={wrapper} className="vditor-editor" style={{ "--editor-font-scale": zoom } as React.CSSProperties}><output className="editor-zoom-indicator" aria-live="polite" aria-label={`当前正文缩放 ${Math.round(zoom * 100)}%`}>{Math.round(zoom * 100)}%</output><div ref={host} className="vditor-host" aria-label="报告正文" /></div>;
 }
 
 function ReportWorkspace({ menu, preferences, toast, createOnOpen, onCreated }: { menu: NavigationMenu; preferences: Preferences; toast: (message: string) => void; createOnOpen: boolean; onCreated: () => void }) {

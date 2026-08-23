@@ -68,6 +68,8 @@ pub struct AppPreferences {
     pub minimize_to_tray: bool,
     pub default_report_load_count: u32,
     pub refresh_report_load_count: u32,
+    /// Font scale used by all Vditor report editors (0.8 through 1.5).
+    pub editor_font_scale: f64,
     /// Display order for the per-menu action buttons in Menu Management.
     /// Stored independently from navigation menu ordering.
     pub menu_action_order: Vec<String>,
