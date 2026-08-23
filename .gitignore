@@ -10,6 +10,11 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# Vditor resolves its runtime files from a `dist` subdirectory. These selected
+# offline assets are source-controlled application resources, not build output.
+!public/vditor/
+!public/vditor/dist/
+!public/vditor/dist/**
 *.local
 data
 

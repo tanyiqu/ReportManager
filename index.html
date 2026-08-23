@@ -4,9 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ReportManager - 个人工作记录</title>
+    <!-- Vditor loads these globals dynamically by default. Keeping them local and
+         preloading them avoids a network dependency and initialization races. -->
+    <script id="vditorI18nScriptzh_CN" src="/vditor/dist/js/i18n/zh_CN.js"></script>
+    <script id="vditorLuteScript" src="/vditor/dist/js/lute/lute.min.js"></script>
   </head>
 
   <body>
+    <!-- The icon bundle inserts its SVG sprite into document.body, so it must run
+         after the body exists and before React initializes Vditor. -->
+    <script id="vditorIconScript" src="/vditor/dist/js/icons/ant.js"></script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
