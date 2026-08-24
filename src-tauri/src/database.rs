@@ -65,6 +65,9 @@ impl Database {
         connection
             .execute_batch(include_str!("../migrations/0007_editor_font_scale.sql"))
             .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(include_str!("../migrations/0008_editor_mode.sql"))
+            .map_err(|error| error.to_string())?;
         Self::seed_navigation(&connection)?;
         if is_new_database {
             Self::seed_initial_daily_record(&connection)?;
@@ -99,6 +102,7 @@ impl Database {
             ("default_report_load_count", "15"),
             ("refresh_report_load_count", "15"),
             ("editor_font_scale", "1"),
+            ("editor_mode", "wysiwyg"),
         ] {
             connection
                 .execute(
@@ -180,6 +184,7 @@ impl Database {
                 .parse::<f64>()
                 .unwrap_or(1.0)
                 .clamp(0.8, 1.5),
+            editor_mode: Self::normalize_editor_mode(&setting("editor_mode", "wysiwyg")?),
             menu_action_order: Self::normalize_menu_action_order(&setting(
                 "menu_action_order",
                 "[\"visibility\",\"period\",\"rename\",\"icon\",\"delete\"]",
@@ -208,6 +213,15 @@ impl Database {
             }
         }
         normalized
+    }
+
+    /// Keeps the editor usable if an older client or a manually edited database
+    /// contains an unsupported Vditor display mode.
+    fn normalize_editor_mode(value: &str) -> String {
+        match value {
+            "ir" | "sv" | "wysiwyg" => value.to_string(),
+            _ => "wysiwyg".to_string(),
+        }
     }
 
     pub fn save_preferences(&self, preferences: AppPreferences) -> Result<AppPreferences, String> {
@@ -241,6 +255,10 @@ impl Database {
             (
                 "editor_font_scale",
                 preferences.editor_font_scale.clamp(0.8, 1.5).to_string(),
+            ),
+            (
+                "editor_mode",
+                Self::normalize_editor_mode(&preferences.editor_mode),
             ),
             (
                 "menu_action_order",
