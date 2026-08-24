@@ -13,8 +13,11 @@ pub struct Database(Mutex<Connection>);
 impl Database {
     pub fn open(data_dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
-        let connection = Connection::open(data_dir.join("report-manager.db"))
-            .map_err(|error| error.to_string())?;
+        let database_path = data_dir.join("report-manager.db");
+        // Demo content belongs only to a brand-new data directory. Existing
+        // databases must never receive records merely because the app starts.
+        let is_new_database = !database_path.exists();
+        let connection = Connection::open(&database_path).map_err(|error| error.to_string())?;
         connection
             .execute_batch(include_str!("../migrations/0001_initial.sql"))
             .map_err(|error| error.to_string())?;
@@ -63,7 +66,9 @@ impl Database {
             .execute_batch(include_str!("../migrations/0007_editor_font_scale.sql"))
             .map_err(|error| error.to_string())?;
         Self::seed_navigation(&connection)?;
-        Self::seed_management_weekly_records(&connection)?;
+        if is_new_database {
+            Self::seed_initial_daily_record(&connection)?;
+        }
         Ok(Self(Mutex::new(connection)))
     }
 
@@ -105,53 +110,27 @@ impl Database {
         Ok(())
     }
 
-    /// Adds the requested twenty rolling weekly samples to the existing
-    /// management-weekly menu. The historic `weekly` id is the compatible
-    /// fallback when the user has not renamed that menu yet.
-    fn seed_management_weekly_records(connection: &Connection) -> Result<(), String> {
-        let menu_id = connection
+    /// Creates the sole demonstration report for a freshly created database.
+    /// SQLite's local time keeps the displayed title consistent with the
+    /// report date even when the user's system time zone differs from UTC.
+    fn seed_initial_daily_record(connection: &Connection) -> Result<(), String> {
+        let (record_date, month, day): (String, i64, i64) = connection
             .query_row(
-                "SELECT id FROM navigation_menus WHERE label = '管理层周报' LIMIT 1",
+                "SELECT date('now', 'localtime'), CAST(strftime('%m', 'now', 'localtime') AS INTEGER), CAST(strftime('%d', 'now', 'localtime') AS INTEGER)",
                 [],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| "weekly".to_string());
-        let current_week_start: String = connection
-            .query_row("SELECT date('now', 'localtime', '-' || ((CAST(strftime('%w', 'now', 'localtime') AS INTEGER) + 6) % 7) || ' days')", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
-        for index in 0..20_i64 {
-            let offset = format!("-{} days", index * 7);
-            let (start, end, week): (String, String, String) = connection
-                .query_row(
-                    "SELECT date(?1, ?2), date(?1, ?2, '+6 days'), strftime('%V', date(?1, ?2), '+3 days')",
-                    params![current_week_start, offset],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .map_err(|error| error.to_string())?;
-            let format_date = |value: &str| {
-                let parts = value.split('-').collect::<Vec<_>>();
-                format!(
-                    "{}年{}月{}日",
-                    parts[0],
-                    parts[1].trim_start_matches('0'),
-                    parts[2].trim_start_matches('0')
-                )
-            };
-            let week_number = week.parse::<u32>().unwrap_or(0);
-            let content = format!(
-                "{} - {}，第{}周",
-                format_date(&start),
-                format_date(&end),
-                week_number
-            );
-            let id = format!("management-weekly-{start}");
-            connection.execute(
-                "INSERT OR IGNORE INTO records (id, type, record_date, title, content, tags, metadata, status, created_at, updated_at, menu_id) VALUES (?1, 'weekly', ?2, ?3, ?4, '[]', '{}', 'saved', datetime('now', 'localtime'), datetime('now', 'localtime'), ?5)",
-                params![id, start, content, content, menu_id],
-            ).map_err(|error| error.to_string())?;
-        }
+        let title = format!("{month}.{day}日报");
+        let content = format!("{title}（系统自动生成）");
+        let id = format!("initial-daily-{record_date}");
+
+        connection
+            .execute(
+                "INSERT INTO records (id, type, record_date, title, content, tags, metadata, status, created_at, updated_at, menu_id) VALUES (?1, 'daily', ?2, ?3, ?4, '[]', '{}', 'saved', datetime('now', 'localtime'), datetime('now', 'localtime'), 'daily')",
+                params![id, record_date, title, content],
+            )
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -481,17 +460,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_database() -> Database {
+        Database::open(test_data_dir()).expect("open test database")
+    }
+
+    fn test_data_dir() -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
             .as_nanos();
-        Database::open(std::env::temp_dir().join(format!("report-manager-test-{suffix}")))
-            .expect("open test database")
+        std::env::temp_dir().join(format!("report-manager-test-{suffix}"))
     }
 
-    fn weekly_query(limit: u32, offset: u32) -> RecordQuery {
+    fn daily_query(limit: u32, offset: u32) -> RecordQuery {
         RecordQuery {
-            menu_id: Some("weekly".to_string()),
+            menu_id: Some("daily".to_string()),
             record_type: None,
             keyword: None,
             date_from: None,
@@ -503,31 +485,57 @@ mod tests {
     }
 
     #[test]
-    fn seeds_and_pages_twenty_weekly_reports() {
+    fn seeds_one_daily_report_only_when_database_is_created() {
         let database = test_database();
-        let first_page = database
-            .list_records(weekly_query(15, 0))
-            .expect("first page");
-        let second_page = database
-            .list_records(weekly_query(15, 15))
-            .expect("second page");
-        assert_eq!(first_page.len(), 15);
-        assert_eq!(second_page.len(), 5);
-        assert!(first_page[0].content.contains("，第"));
-        assert!(first_page[0].record_date > first_page[1].record_date);
+        let records = database
+            .list_records(daily_query(15, 0))
+            .expect("daily report");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].menu_id, "daily");
+        assert_eq!(
+            records[0].title,
+            format!(
+                "{}.{}日报",
+                records[0].record_date[5..7].parse::<u32>().expect("month"),
+                records[0].record_date[8..10].parse::<u32>().expect("day")
+            )
+        );
+        assert_eq!(
+            records[0].content,
+            format!("{}（系统自动生成）", records[0].title)
+        );
+    }
+
+    #[test]
+    fn does_not_seed_records_when_reopening_an_existing_database() {
+        let data_dir = test_data_dir();
+        let database = Database::open(data_dir.clone()).expect("create test database");
+        let id = database
+            .list_records(daily_query(1, 0))
+            .expect("seeded record")
+            .remove(0)
+            .id;
+        database.delete_record(&id).expect("delete seeded record");
+        drop(database);
+
+        let reopened = Database::open(data_dir).expect("reopen test database");
+        assert!(reopened
+            .list_records(daily_query(15, 0))
+            .expect("daily records")
+            .is_empty());
     }
 
     #[test]
     fn saves_and_searches_markdown_content() {
         let database = test_database();
         let mut record = database
-            .list_records(weekly_query(1, 0))
+            .list_records(daily_query(1, 0))
             .expect("record")
             .remove(0);
         record.content = "## 已完成\n\n- 分页查询".to_string();
         record.updated_at = "2026-08-22T12:00:00Z".to_string();
         database.save_record(record).expect("save record");
-        let mut query = weekly_query(15, 0);
+        let mut query = daily_query(15, 0);
         query.keyword = Some("分页查询".to_string());
         let matches = database.list_records(query).expect("search record");
         assert_eq!(matches.len(), 1);
@@ -538,7 +546,7 @@ mod tests {
     fn deletes_a_saved_record() {
         let database = test_database();
         let id = database
-            .list_records(weekly_query(1, 0))
+            .list_records(daily_query(1, 0))
             .expect("record")
             .remove(0)
             .id;
