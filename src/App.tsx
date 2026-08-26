@@ -1046,6 +1046,14 @@ function ReportWorkspace({
                     onChange={(event) =>
                       setSelected({ ...selected, title: event.target.value })
                     }
+                    // Vditor handles this shortcut for the body, while the native
+                    // title input needs its own handler to prevent the browser save page action.
+                    onKeyDown={(event) => {
+                      if (event.ctrlKey && event.key.toLowerCase() === "s") {
+                        event.preventDefault();
+                        save();
+                      }
+                    }}
                     aria-label="报告标题"
                   />
                   <button
