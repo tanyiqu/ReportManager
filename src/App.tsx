@@ -1,159 +1,1792 @@
-import { PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import {
+  PointerEvent as ReactPointerEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { DatePicker, Input, Select } from "@douyinfe/semi-ui";
 import { invoke } from "@tauri-apps/api/core";
 import Vditor from "vditor";
 import "vditor/dist/index.css";
 import "./App.css";
 
-type ReportPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly" | "custom";
+type ReportPeriod =
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "quarterly"
+  | "yearly"
+  | "custom";
 type MenuAction = "visibility" | "period" | "rename" | "icon" | "delete";
 type RecordType = "daily" | "weekly" | "meeting";
 type EditorMode = "wysiwyg" | "ir" | "sv";
-type NavigationMenu = { id: string; label: string; iconSvg: string; sortOrder: number; isSystem: boolean; isHidden: boolean; reportPeriod: ReportPeriod };
-type Preferences = { sidebarCollapsed: boolean; defaultPageId: string; weekStart: string; exportDirectory: string; minimizeToTray: boolean; defaultReportLoadCount: number; refreshReportLoadCount: number; editorFontScale: number; editorMode: EditorMode; menuActionOrder: MenuAction[]; menus: NavigationMenu[] };
-type ReportRecord = { id: string; recordType: RecordType; recordDate: string; title: string; content: string; tags: string[]; metadata: Record<string, unknown>; status: "draft" | "saved"; createdAt: string; updatedAt: string; menuId: string };
-type Dialog = "manage" | "add" | "rename" | "icon" | "period" | "delete" | "sort" | null;
+type NavigationMenu = {
+  id: string;
+  label: string;
+  iconSvg: string;
+  sortOrder: number;
+  isSystem: boolean;
+  isHidden: boolean;
+  reportPeriod: ReportPeriod;
+};
+type Preferences = {
+  sidebarCollapsed: boolean;
+  defaultPageId: string;
+  weekStart: string;
+  exportDirectory: string;
+  minimizeToTray: boolean;
+  defaultReportLoadCount: number;
+  refreshReportLoadCount: number;
+  editorFontScale: number;
+  editorMode: EditorMode;
+  menuActionOrder: MenuAction[];
+  menus: NavigationMenu[];
+};
+type ReportRecord = {
+  id: string;
+  recordType: RecordType;
+  recordDate: string;
+  title: string;
+  content: string;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  status: "draft" | "saved";
+  createdAt: string;
+  updatedAt: string;
+  menuId: string;
+};
+type Dialog =
+  | "manage"
+  | "add"
+  | "rename"
+  | "icon"
+  | "period"
+  | "delete"
+  | "sort"
+  | null;
 
 const NS = "http://www.w3.org/2000/svg";
-const icon = (paths: string) => `<svg xmlns="${NS}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+const icon = (paths: string) =>
+  `<svg xmlns="${NS}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 const icons = {
-  home: icon('<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-6h6v6"/>'),
+  home: icon(
+    '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-6h6v6"/>',
+  ),
   daily: icon('<path d="M6 3h9l3 3v15H6z"/><path d="M9 12h6M9 16h6M9 8h3"/>'),
-  folder: icon('<path d="M3 7h7l2 2h9v11H3z"/>'), list: icon('<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3 6 1 1 2-2m-3 7 1 1 2-2m-3 7 1 1 2-2"/>'),
-  settings: icon('<circle cx="12" cy="12" r="3"/><path d="M19 15l2 2-4 4-2-2M9 5 7 3 3 7l2 2M5 15l-2 2 4 4 2-2M15 5l2-2 4 4-2 2M12 2v4M12 18v4M2 12h4M18 12h4"/>'),
-  menu: icon('<path d="M4 6h16M4 12h16M4 18h16"/>'), search: icon('<circle cx="11" cy="11" r="6"/><path d="m20 20-4-4"/>'), rename: icon('<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/>'), change: icon('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'),
-  calendar: icon('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 10h18M8 14h3M8 17h7"/>'), eye: icon('<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>'), hidden: icon('<path d="m3 3 18 18M10.6 6.2A12 12 0 0 1 12 6c6.5 0 10 6 10 6a18 18 0 0 1-3 3.7M6.2 6.2C3.6 8 2 12 2 12s3.5 6 10 6a10 10 0 0 0 3.8-.7"/>'), trash: icon('<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/>'),
-  filter: icon('<path d="M4 5h16l-6 7v5l-4 2v-7Z"/>'), save: icon('<path d="M5 3h12l2 2v16H5ZM8 3v6h8V3M8 21v-7h8v7"/>'), copy: icon('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4"/>'), zoomIn: icon('<circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M20 20l-4-4"/>'), zoomOut: icon('<circle cx="11" cy="11" r="7"/><path d="M8 11h6M20 20l-4-4"/>')
+  folder: icon('<path d="M3 7h7l2 2h9v11H3z"/>'),
+  list: icon(
+    '<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3 6 1 1 2-2m-3 7 1 1 2-2m-3 7 1 1 2-2"/>',
+  ),
+  settings: icon(
+    '<circle cx="12" cy="12" r="3"/><path d="M19 15l2 2-4 4-2-2M9 5 7 3 3 7l2 2M5 15l-2 2 4 4 2-2M15 5l2-2 4 4-2 2M12 2v4M12 18v4M2 12h4M18 12h4"/>',
+  ),
+  menu: icon('<path d="M4 6h16M4 12h16M4 18h16"/>'),
+  search: icon('<circle cx="11" cy="11" r="6"/><path d="m20 20-4-4"/>'),
+  rename: icon(
+    '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/>',
+  ),
+  change: icon(
+    '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
+  ),
+  calendar: icon(
+    '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 10h18M8 14h3M8 17h7"/>',
+  ),
+  eye: icon(
+    '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>',
+  ),
+  hidden: icon(
+    '<path d="m3 3 18 18M10.6 6.2A12 12 0 0 1 12 6c6.5 0 10 6 10 6a18 18 0 0 1-3 3.7M6.2 6.2C3.6 8 2 12 2 12s3.5 6 10 6a10 10 0 0 0 3.8-.7"/>',
+  ),
+  trash: icon('<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/>'),
+  filter: icon('<path d="M4 5h16l-6 7v5l-4 2v-7Z"/>'),
+  save: icon('<path d="M5 3h12l2 2v16H5ZM8 3v6h8V3M8 21v-7h8v7"/>'),
+  copy: icon(
+    '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4"/>',
+  ),
+  zoomIn: icon(
+    '<circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M20 20l-4-4"/>',
+  ),
+  zoomOut: icon(
+    '<circle cx="11" cy="11" r="7"/><path d="M8 11h6M20 20l-4-4"/>',
+  ),
 };
-const iconChoices = [{ name: "首页", svg: icons.home }, { name: "日报", svg: icons.daily }, { name: "文件夹", svg: icons.folder }, { name: "清单", svg: icons.list }, { name: "设置", svg: icons.settings }];
-const periods: { value: ReportPeriod; label: string }[] = [{ value: "daily", label: "每日" }, { value: "weekly", label: "每周" }, { value: "monthly", label: "每月" }, { value: "quarterly", label: "每季度" }, { value: "yearly", label: "每年" }, { value: "custom", label: "自定义" }];
-const editorModes: { value: EditorMode; label: string }[] = [{ value: "wysiwyg", label: "所见即所得" }, { value: "ir", label: "即时渲染" }, { value: "sv", label: "分屏预览" }];
-const periodName = (value: ReportPeriod) => periods.find((item) => item.value === value)?.label ?? "每日";
-const today = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date());
-const isoDate = (date = new Date()) => new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-const defaultDateRange = () => { const end = new Date(); const start = new Date(end); start.setDate(start.getDate() - 7); return { from: isoDate(start), to: isoDate(end) }; };
-// Native date inputs also allow direct keyboard entry. Check the parsed value before it reaches SQLite.
-const isValidIsoDate = (value: string) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false; const date = new Date(`${value}T00:00:00`); return !Number.isNaN(date.getTime()) && isoDate(date) === value; };
+const iconChoices = [
+  { name: "首页", svg: icons.home },
+  { name: "日报", svg: icons.daily },
+  { name: "文件夹", svg: icons.folder },
+  { name: "清单", svg: icons.list },
+  { name: "设置", svg: icons.settings },
+];
+const periods: { value: ReportPeriod; label: string }[] = [
+  { value: "daily", label: "每日" },
+  { value: "weekly", label: "每周" },
+  { value: "monthly", label: "每月" },
+  { value: "quarterly", label: "每季度" },
+  { value: "yearly", label: "每年" },
+  { value: "custom", label: "自定义" },
+];
+const editorModes: { value: EditorMode; label: string }[] = [
+  { value: "wysiwyg", label: "所见即所得" },
+  { value: "ir", label: "即时渲染" },
+  { value: "sv", label: "分屏预览" },
+];
+const periodName = (value: ReportPeriod) =>
+  periods.find((item) => item.value === value)?.label ?? "每日";
+const today = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  weekday: "long",
+}).format(new Date());
+const isoDate = (date = new Date()) =>
+  new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 10);
+const defaultDateRange = () => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 7);
+  return { from: isoDate(start), to: isoDate(end) };
+};
+// Semi DatePicker also supports direct keyboard entry. Check the parsed value before it reaches SQLite.
+const isValidIsoDate = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00`);
+  return !Number.isNaN(date.getTime()) && isoDate(date) === value;
+};
 
-function SvgIcon({ svg }: { svg: string }) { const complete = /<svg\b[^>]*\bxmlns=/.test(svg) ? svg : svg.replace(/<svg\b/, `<svg xmlns="${NS}"`); const bytes = new TextEncoder().encode(complete); let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte); const image = `url("data:image/svg+xml;base64,${btoa(binary)}")`; return <span className="svg-icon" aria-hidden="true" style={{ WebkitMaskImage: image, maskImage: image }} />; }
-function DialogShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) { return <div className="dialog-backdrop" onMouseDown={onClose}><section className="dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><div className="dialog-heading"><h2>{title}</h2><button className="dialog-close" onClick={onClose} aria-label="关闭对话框">×</button></div>{children}</section></div>; }
-const actionLabels: Record<MenuAction, string> = { visibility: "隐藏菜单", period: "报告周期", rename: "重命名菜单", icon: "修改菜单图标", delete: "删除菜单" };
+function SvgIcon({ svg }: { svg: string }) {
+  const complete = /<svg\b[^>]*\bxmlns=/.test(svg)
+    ? svg
+    : svg.replace(/<svg\b/, `<svg xmlns="${NS}"`);
+  const bytes = new TextEncoder().encode(complete);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const image = `url("data:image/svg+xml;base64,${btoa(binary)}")`;
+  return (
+    <span
+      className="svg-icon"
+      aria-hidden="true"
+      style={{ WebkitMaskImage: image, maskImage: image }}
+    />
+  );
+}
+function DialogShell({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="dialog-backdrop" onMouseDown={onClose}>
+      <section
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="dialog-heading">
+          <h2>{title}</h2>
+          <button
+            className="dialog-close"
+            onClick={onClose}
+            aria-label="关闭对话框"
+          >
+            ×
+          </button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+const actionLabels: Record<MenuAction, string> = {
+  visibility: "隐藏菜单",
+  period: "报告周期",
+  rename: "重命名菜单",
+  icon: "修改菜单图标",
+  delete: "删除菜单",
+};
 
-function SortMenuActions({ actions, onSorted }: { actions: MenuAction[]; onSorted: (value: MenuAction[]) => void }) {
-  const [dragged, setDragged] = useState<MenuAction | null>(null); const [target, setTarget] = useState<MenuAction | null>(null); const active = useRef<MenuAction | null>(null); const drop = useRef<MenuAction | null>(null);
-  const reset = () => { active.current = null; drop.current = null; setDragged(null); setTarget(null); };
-  const move = (event: ReactPointerEvent<HTMLButtonElement>) => { const item = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-action-id]")?.dataset.actionId as MenuAction | undefined; drop.current = item && item !== active.current ? item : null; setTarget(drop.current); };
-  const finish = () => { const source = active.current; const destination = drop.current; reset(); if (!source || !destination) return; const next = actions.filter((item) => item !== source); next.splice(next.indexOf(destination), 0, source); onSorted(next); };
-  return <div className="action-sort-list">{actions.map((action) => <button key={action} data-action-id={action} className={`action-sort-item ${dragged === action ? "is-dragging" : ""} ${target === action ? "is-drop-target" : ""}`} onPointerDown={(event) => { active.current = action; setDragged(action); event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={move} onPointerUp={finish} onPointerCancel={reset}><span className="drag-handle">⋮⋮</span>{actionLabels[action]}</button>)}</div>;
+function SortMenuActions({
+  actions,
+  onSorted,
+}: {
+  actions: MenuAction[];
+  onSorted: (value: MenuAction[]) => void;
+}) {
+  const [dragged, setDragged] = useState<MenuAction | null>(null);
+  const [target, setTarget] = useState<MenuAction | null>(null);
+  const active = useRef<MenuAction | null>(null);
+  const drop = useRef<MenuAction | null>(null);
+  const reset = () => {
+    active.current = null;
+    drop.current = null;
+    setDragged(null);
+    setTarget(null);
+  };
+  const move = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const item = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-action-id]")?.dataset.actionId as
+      | MenuAction
+      | undefined;
+    drop.current = item && item !== active.current ? item : null;
+    setTarget(drop.current);
+  };
+  const finish = () => {
+    const source = active.current;
+    const destination = drop.current;
+    reset();
+    if (!source || !destination) return;
+    const next = actions.filter((item) => item !== source);
+    next.splice(next.indexOf(destination), 0, source);
+    onSorted(next);
+  };
+  return (
+    <div className="action-sort-list">
+      {actions.map((action) => (
+        <button
+          key={action}
+          data-action-id={action}
+          className={`action-sort-item ${dragged === action ? "is-dragging" : ""} ${target === action ? "is-drop-target" : ""}`}
+          onPointerDown={(event) => {
+            active.current = action;
+            setDragged(action);
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={move}
+          onPointerUp={finish}
+          onPointerCancel={reset}
+        >
+          <span className="drag-handle">⋮⋮</span>
+          {actionLabels[action]}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-function SortableNavigationMenus({ menus, order, toggle, edit, remove, onSorted }: { menus: NavigationMenu[]; order: MenuAction[]; toggle: (item: NavigationMenu) => void; edit: (item: NavigationMenu, type: "rename" | "icon" | "period") => void; remove: (item: NavigationMenu) => void; onSorted: (menus: NavigationMenu[]) => void }) {
-  const [dragged, setDragged] = useState<string | null>(null); const [target, setTarget] = useState<string | null>(null); const active = useRef<string | null>(null); const drop = useRef<string | null>(null);
+function SortableNavigationMenus({
+  menus,
+  order,
+  toggle,
+  edit,
+  remove,
+  onSorted,
+}: {
+  menus: NavigationMenu[];
+  order: MenuAction[];
+  toggle: (item: NavigationMenu) => void;
+  edit: (item: NavigationMenu, type: "rename" | "icon" | "period") => void;
+  remove: (item: NavigationMenu) => void;
+  onSorted: (menus: NavigationMenu[]) => void;
+}) {
+  const [dragged, setDragged] = useState<string | null>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  const active = useRef<string | null>(null);
+  const drop = useRef<string | null>(null);
   const isFixed = (id: string) => id === "home" || id === "settings";
-  const reset = () => { active.current = null; drop.current = null; setDragged(null); setTarget(null); };
+  const reset = () => {
+    active.current = null;
+    drop.current = null;
+    setDragged(null);
+    setTarget(null);
+  };
   // Resolve the destination from the pointer instead of native drag events,
   // which are inconsistent in the desktop WebView used by Tauri.
-  const move = (event: ReactPointerEvent<HTMLButtonElement>) => { const id = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-menu-id]")?.dataset.menuId; drop.current = id && id !== active.current && !isFixed(id) ? id : null; setTarget(drop.current); };
-  const finish = () => { const source = active.current; const destination = drop.current; reset(); if (!source || !destination) return; const next = menus.filter((item) => item.id !== source); const destinationIndex = next.findIndex((item) => item.id === destination); if (destinationIndex < 0) return; next.splice(destinationIndex, 0, menus.find((item) => item.id === source)!); onSorted(next.map((item, index) => ({ ...item, sortOrder: index }))); };
-  return <div className="menu-list" aria-label="可拖拽排序的菜单列表">{menus.map((item) => { const fixed = isFixed(item.id); return <div key={item.id} data-menu-id={item.id} className={`menu-row menu-management-row ${dragged === item.id ? "is-dragging" : ""} ${target === item.id ? "is-drop-target" : ""}`}><button type="button" className="menu-drag-handle" disabled={fixed} title={fixed ? "此菜单位置固定" : "拖拽调整菜单顺序"} aria-label={`${item.label}：拖拽调整菜单顺序`} onPointerDown={(event) => { active.current = item.id; setDragged(item.id); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); }} onPointerMove={move} onPointerUp={finish} onPointerCancel={reset}>⋮⋮</button><SvgIcon svg={item.iconSvg} /><span className="menu-row-label">{item.label}{!item.isSystem && <small className="menu-period">● {periodName(item.reportPeriod)}</small>}</span><MenuActions item={item} order={order} toggle={toggle} edit={edit} remove={remove} /></div>; })}</div>;
+  const move = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const id = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-menu-id]")?.dataset.menuId;
+    drop.current = id && id !== active.current && !isFixed(id) ? id : null;
+    setTarget(drop.current);
+  };
+  const finish = () => {
+    const source = active.current;
+    const destination = drop.current;
+    reset();
+    if (!source || !destination) return;
+    const next = menus.filter((item) => item.id !== source);
+    const destinationIndex = next.findIndex((item) => item.id === destination);
+    if (destinationIndex < 0) return;
+    next.splice(destinationIndex, 0, menus.find((item) => item.id === source)!);
+    onSorted(next.map((item, index) => ({ ...item, sortOrder: index })));
+  };
+  return (
+    <div className="menu-list" aria-label="可拖拽排序的菜单列表">
+      {menus.map((item) => {
+        const fixed = isFixed(item.id);
+        return (
+          <div
+            key={item.id}
+            data-menu-id={item.id}
+            className={`menu-row menu-management-row ${dragged === item.id ? "is-dragging" : ""} ${target === item.id ? "is-drop-target" : ""}`}
+          >
+            <button
+              type="button"
+              className="menu-drag-handle"
+              disabled={fixed}
+              title={fixed ? "此菜单位置固定" : "拖拽调整菜单顺序"}
+              aria-label={`${item.label}：拖拽调整菜单顺序`}
+              onPointerDown={(event) => {
+                active.current = item.id;
+                setDragged(item.id);
+                event.currentTarget.setPointerCapture(event.pointerId);
+                event.preventDefault();
+              }}
+              onPointerMove={move}
+              onPointerUp={finish}
+              onPointerCancel={reset}
+            >
+              ⋮⋮
+            </button>
+            <SvgIcon svg={item.iconSvg} />
+            <span className="menu-row-label">
+              {item.label}
+              {!item.isSystem && (
+                <small className="menu-period">
+                  ● {periodName(item.reportPeriod)}
+                </small>
+              )}
+            </span>
+            <MenuActions
+              item={item}
+              order={order}
+              toggle={toggle}
+              edit={edit}
+              remove={remove}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
-function MenuActions({ item, order, toggle, edit, remove }: { item: NavigationMenu; order: MenuAction[]; toggle: (item: NavigationMenu) => void; edit: (item: NavigationMenu, type: "rename" | "icon" | "period") => void; remove: (item: NavigationMenu) => void }) {
+function MenuActions({
+  item,
+  order,
+  toggle,
+  edit,
+  remove,
+}: {
+  item: NavigationMenu;
+  order: MenuAction[];
+  toggle: (item: NavigationMenu) => void;
+  edit: (item: NavigationMenu, type: "rename" | "icon" | "period") => void;
+  remove: (item: NavigationMenu) => void;
+}) {
   const fixed = item.id === "home" || item.id === "settings";
-  return <div className="menu-actions">{order.map((action) => {
-    if (action === "visibility") return <button key={action} className={`icon-button ${item.isHidden ? "is-active" : ""}`} disabled={fixed} title={item.isHidden ? "显示菜单" : "隐藏菜单"} onClick={() => toggle(item)}><SvgIcon svg={item.isHidden ? icons.hidden : icons.eye} /></button>;
-    if (action === "period") return !fixed && <button key={action} className="icon-button" title="报告周期" onClick={() => edit(item, "period")}><SvgIcon svg={icons.calendar} /></button>;
-    if (action === "rename") return <button key={action} className="icon-button" title="重命名" onClick={() => edit(item, "rename")}><SvgIcon svg={icons.rename} /></button>;
-    if (action === "icon") return <button key={action} className="icon-button" title="修改图标" onClick={() => edit(item, "icon")}><SvgIcon svg={icons.change} /></button>;
-    return <button key={action} className="icon-button danger-icon" disabled={fixed || item.isSystem} title="删除" onClick={() => remove(item)}><SvgIcon svg={icons.trash} /></button>;
-  })}</div>;
+  return (
+    <div className="menu-actions">
+      {order.map((action) => {
+        if (action === "visibility")
+          return (
+            <button
+              key={action}
+              className={`icon-button ${item.isHidden ? "is-active" : ""}`}
+              disabled={fixed}
+              title={item.isHidden ? "显示菜单" : "隐藏菜单"}
+              onClick={() => toggle(item)}
+            >
+              <SvgIcon svg={item.isHidden ? icons.hidden : icons.eye} />
+            </button>
+          );
+        if (action === "period")
+          return (
+            !fixed && (
+              <button
+                key={action}
+                className="icon-button"
+                title="报告周期"
+                onClick={() => edit(item, "period")}
+              >
+                <SvgIcon svg={icons.calendar} />
+              </button>
+            )
+          );
+        if (action === "rename")
+          return (
+            <button
+              key={action}
+              className="icon-button"
+              title="重命名"
+              onClick={() => edit(item, "rename")}
+            >
+              <SvgIcon svg={icons.rename} />
+            </button>
+          );
+        if (action === "icon")
+          return (
+            <button
+              key={action}
+              className="icon-button"
+              title="修改图标"
+              onClick={() => edit(item, "icon")}
+            >
+              <SvgIcon svg={icons.change} />
+            </button>
+          );
+        return (
+          <button
+            key={action}
+            className="icon-button danger-icon"
+            disabled={fixed || item.isSystem}
+            title="删除"
+            onClick={() => remove(item)}
+          >
+            <SvgIcon svg={icons.trash} />
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 const vditorCdn = new URL("vditor", document.baseURI).href.replace(/\/$/, "");
-const clampEditorFontScale = (value: number) => Math.min(1.5, Math.max(.8, Number(value.toFixed(1))));
+const clampEditorFontScale = (value: number) =>
+  Math.min(1.5, Math.max(0.8, Number(value.toFixed(1))));
 
-function VditorEditor({ record, editorMode = "wysiwyg", change, save }: { record: ReportRecord; editorMode?: EditorMode; change: (value: string) => void; save: () => void }) {
-  const host = useRef<HTMLDivElement>(null); const wrapper = useRef<HTMLDivElement>(null); const editor = useRef<Vditor | null>(null); const loadedRecordId = useRef(""); const recordRef = useRef(record); const changeRef = useRef(change); const saveRef = useRef(save); const zoomLoaded = useRef(false); const [zoom, setZoom] = useState(1);
-  recordRef.current = record; changeRef.current = change; saveRef.current = save;
+function VditorEditor({
+  record,
+  editorMode = "wysiwyg",
+  change,
+  save,
+}: {
+  record: ReportRecord;
+  editorMode?: EditorMode;
+  change: (value: string) => void;
+  save: () => void;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const editor = useRef<Vditor | null>(null);
+  const loadedRecordId = useRef("");
+  const recordRef = useRef(record);
+  const changeRef = useRef(change);
+  const saveRef = useRef(save);
+  const zoomLoaded = useRef(false);
+  const [zoom, setZoom] = useState(1);
+  recordRef.current = record;
+  changeRef.current = change;
+  saveRef.current = save;
 
   // Delay construction by one task so React StrictMode can run its development-only
   // mount cleanup without leaving an asynchronously initialized Vditor behind.
-  useEffect(() => { const timer = window.setTimeout(() => { if (!host.current) return; const current = recordRef.current; editor.current = new Vditor(host.current, { cdn: vditorCdn, value: current.content, mode: editorMode, lang: "zh_CN", height: "100%", minHeight: 260, cache: { enable: false }, outline: { enable: false, position: "left" }, resize: { enable: false }, placeholder: "在这里开始记录……", toolbar: ["headings", "bold", "italic", "strike", "|", "list", "ordered-list", "check", "quote", "line", "code", "inline-code", "link", "table", "|", "undo", "redo", "fullscreen","edit-mode"], input: (value) => changeRef.current(value), keydown: (event) => { if (event.ctrlKey && event.key.toLowerCase() === "s") { event.preventDefault(); event.stopPropagation(); saveRef.current(); } }, after: () => { loadedRecordId.current = current.id; const latest = recordRef.current; if (latest.id !== current.id) { editor.current?.setValue(latest.content, true); loadedRecordId.current = latest.id; } } }); }, 0); return () => { window.clearTimeout(timer); const instance = editor.current; editor.current = null; if (instance?.vditor) instance.destroy(); }; }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!host.current) return;
+      const current = recordRef.current;
+      editor.current = new Vditor(host.current, {
+        cdn: vditorCdn,
+        value: current.content,
+        mode: editorMode,
+        lang: "zh_CN",
+        height: "100%",
+        minHeight: 260,
+        cache: { enable: false },
+        outline: { enable: false, position: "left" },
+        resize: { enable: false },
+        placeholder: "在这里开始记录……",
+        toolbar: [
+          "headings",
+          "bold",
+          "italic",
+          "strike",
+          "|",
+          "list",
+          "ordered-list",
+          "check",
+          "quote",
+          "line",
+          "code",
+          "inline-code",
+          "link",
+          "table",
+          "|",
+          "undo",
+          "redo",
+          "fullscreen",
+          "edit-mode",
+        ],
+        input: (value) => changeRef.current(value),
+        keydown: (event) => {
+          if (event.ctrlKey && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            event.stopPropagation();
+            saveRef.current();
+          }
+        },
+        after: () => {
+          loadedRecordId.current = current.id;
+          const latest = recordRef.current;
+          if (latest.id !== current.id) {
+            editor.current?.setValue(latest.content, true);
+            loadedRecordId.current = latest.id;
+          }
+        },
+      });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      const instance = editor.current;
+      editor.current = null;
+      if (instance?.vditor) instance.destroy();
+    };
+  }, []);
 
   // Keep one Vditor instance alive while users move through the report list. This
   // preserves the editor's global resources and resets undo history per report.
-  useEffect(() => { if (editor.current?.vditor && loadedRecordId.current !== record.id) { editor.current.setValue(record.content, true); loadedRecordId.current = record.id; } }, [record.id]);
+  useEffect(() => {
+    if (editor.current?.vditor && loadedRecordId.current !== record.id) {
+      editor.current.setValue(record.content, true);
+      loadedRecordId.current = record.id;
+    }
+  }, [record.id]);
   // The scale belongs to app preferences rather than a single report, so every
   // report menu restores the same readable font size after an app restart.
-  useEffect(() => { let active = true; void invoke<Preferences>("get_app_preferences").then((preferences) => { if (!active) return; zoomLoaded.current = true; setZoom(clampEditorFontScale(preferences.editorFontScale)); }).catch(console.error); return () => { active = false; }; }, []);
+  useEffect(() => {
+    let active = true;
+    void invoke<Preferences>("get_app_preferences")
+      .then((preferences) => {
+        if (!active) return;
+        zoomLoaded.current = true;
+        setZoom(clampEditorFontScale(preferences.editorFontScale));
+      })
+      .catch(console.error);
+    return () => {
+      active = false;
+    };
+  }, []);
   // Vditor exposes display-mode changes through its toolbar rather than a public
   // setter. Applying the persisted choice after construction keeps all report
   // editors aligned with the global editor setting.
-  useEffect(() => { let active = true; void invoke<Preferences>("get_app_preferences").then((preferences) => { window.setTimeout(() => { if (!active) return; editor.current?.vditor.toolbar?.elements?.["edit-mode"]?.querySelector<HTMLButtonElement>(`button[data-mode="${preferences.editorMode}"]`)?.click(); }, 0); }).catch(console.error); return () => { active = false; }; }, []);
+  useEffect(() => {
+    let active = true;
+    void invoke<Preferences>("get_app_preferences")
+      .then((preferences) => {
+        window.setTimeout(() => {
+          if (!active) return;
+          editor.current?.vditor.toolbar?.elements?.["edit-mode"]
+            ?.querySelector<HTMLButtonElement>(
+              `button[data-mode="${preferences.editorMode}"]`,
+            )
+            ?.click();
+        }, 0);
+      })
+      .catch(console.error);
+    return () => {
+      active = false;
+    };
+  }, []);
   // Persist only after the wheel settles, avoiding a database write per wheel tick.
-  useEffect(() => { if (!zoomLoaded.current) return; const timer = window.setTimeout(() => { void invoke<Preferences>("get_app_preferences").then((preferences) => invoke("save_app_preferences", { preferences: { ...preferences, editorFontScale: zoom } })).catch(console.error); }, 300); return () => window.clearTimeout(timer); }, [zoom]);
-  useEffect(() => { const element = wrapper.current; if (!element) return; const handleWheel = (event: WheelEvent) => { if (!event.ctrlKey) return; event.preventDefault(); setZoom((value) => clampEditorFontScale(value + (event.deltaY < 0 ? .1 : -.1))); }; element.addEventListener("wheel", handleWheel, { passive: false }); return () => element.removeEventListener("wheel", handleWheel); }, []);
+  useEffect(() => {
+    if (!zoomLoaded.current) return;
+    const timer = window.setTimeout(() => {
+      void invoke<Preferences>("get_app_preferences")
+        .then((preferences) =>
+          invoke("save_app_preferences", {
+            preferences: { ...preferences, editorFontScale: zoom },
+          }),
+        )
+        .catch(console.error);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [zoom]);
+  useEffect(() => {
+    const element = wrapper.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      setZoom((value) =>
+        clampEditorFontScale(value + (event.deltaY < 0 ? 0.1 : -0.1)),
+      );
+    };
+    element.addEventListener("wheel", handleWheel, { passive: false });
+    return () => element.removeEventListener("wheel", handleWheel);
+  }, []);
 
-  return <div ref={wrapper} className="vditor-editor" style={{ "--editor-font-scale": zoom } as React.CSSProperties}><output className="editor-zoom-indicator" aria-live="polite" aria-label={`当前正文缩放 ${Math.round(zoom * 100)}%`}>{Math.round(zoom * 100)}%</output><div ref={host} className="vditor-host" aria-label="报告正文" /></div>;
+  return (
+    <div
+      ref={wrapper}
+      className="vditor-editor"
+      style={{ "--editor-font-scale": zoom } as React.CSSProperties}
+    >
+      <output
+        className="editor-zoom-indicator"
+        aria-live="polite"
+        aria-label={`当前正文缩放 ${Math.round(zoom * 100)}%`}
+      >
+        {Math.round(zoom * 100)}%
+      </output>
+      <div ref={host} className="vditor-host" aria-label="报告正文" />
+    </div>
+  );
 }
 
-function ReportWorkspace({ menu, preferences, toast, createOnOpen, onCreated }: { menu: NavigationMenu; preferences: Preferences; toast: (message: string) => void; createOnOpen: boolean; onCreated: () => void }) {
-  const [records, setRecords] = useState<ReportRecord[]>([]); const [selected, setSelected] = useState<ReportRecord | null>(null); const [keyword, setKeyword] = useState(""); const [dateFrom, setDateFrom] = useState(""); const [dateTo, setDateTo] = useState(""); const [draftDateFrom, setDraftDateFrom] = useState(""); const [draftDateTo, setDraftDateTo] = useState(""); const [filterOpen, setFilterOpen] = useState(false); const [filterPosition, setFilterPosition] = useState<{ left: number; top: number; width: number } | null>(null); const [filterError, setFilterError] = useState(""); const [dateEditorOpen, setDateEditorOpen] = useState(false); const [draftRecordDate, setDraftRecordDate] = useState(""); const [recordDateError, setRecordDateError] = useState(""); const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false); const [loading, setLoading] = useState(false); const [hasMore, setHasMore] = useState(true); const request = useRef(0); const selectedId = useRef<string | null>(null); const filterButton = useRef<HTMLButtonElement | null>(null); const filterPopover = useRef<HTMLDivElement | null>(null);
-  useEffect(() => { selectedId.current = selected?.id ?? null; }, [selected]);
-  const load = (reset: boolean) => { if (loading && !reset) return; const token = ++request.current; const offset = reset ? 0 : records.length; const limit = reset ? preferences.defaultReportLoadCount : preferences.refreshReportLoadCount; setLoading(true); void invoke<ReportRecord[]>("list_records", { query: { menuId: menu.id, keyword: keyword || null, dateFrom: dateFrom || null, dateTo: dateTo || null, tags: null, recordType: null, limit, offset } }).then((next) => { if (request.current !== token) return; const merged = reset ? next : [...records, ...next]; setRecords(merged); setHasMore(next.length === limit); if (reset && (!selectedId.current || !next.some((item) => item.id === selectedId.current))) setSelected(next[0] ?? null); }).catch((error) => { console.error(error); toast("报告加载失败，请稍后重试。"); }).finally(() => { if (request.current === token) setLoading(false); }); };
-  useEffect(() => { const timer = window.setTimeout(() => load(true), 250); return () => window.clearTimeout(timer); }, [menu.id, keyword, dateFrom, dateTo, preferences.defaultReportLoadCount]);
-  const create = () => { const date = new Date(); if (menu.reportPeriod === "weekly") date.setDate(date.getDate() - ((date.getDay() + 6) % 7)); const now = new Date().toISOString(); const record: ReportRecord = { id: crypto.randomUUID(), recordType: menu.id === "meeting" ? "meeting" : menu.reportPeriod === "weekly" ? "weekly" : "daily", recordDate: isoDate(date), title: `${menu.label} ${isoDate(date)}`, content: "", tags: [], metadata: {}, status: "draft", createdAt: now, updatedAt: now, menuId: menu.id }; setRecords((items) => [record, ...items]); setSelected(record); };
-  useEffect(() => { if (createOnOpen) { create(); onCreated(); } }, [createOnOpen]);
-  const save = () => { if (!selected) return; const next = { ...selected, updatedAt: new Date().toISOString(), status: "saved" as const }; void invoke<ReportRecord>("save_record", { record: next }).then((saved) => { setSelected(saved); setRecords((items) => items.map((item) => item.id === saved.id ? saved : item)); toast("报告已保存"); }).catch((error) => { console.error(error); toast("报告保存失败，请稍后重试。"); }); };
-  const duplicate = () => { if (!selected) return; const now = new Date().toISOString(); const copy: ReportRecord = { ...selected, id: crypto.randomUUID(), title: `${selected.title} - 副本`, status: "draft", createdAt: now, updatedAt: now }; void invoke<ReportRecord>("save_record", { record: copy }).then((saved) => { setRecords((items) => [saved, ...items]); setSelected(saved); toast("报告副本已创建"); }).catch((error) => { console.error(error); toast("复制报告失败，请稍后重试。"); }); };
-  const remove = () => { if (!selected) return; const id = selected.id; void invoke("delete_record", { id }).then(() => { setRecords((items) => { const remaining = items.filter((item) => item.id !== id); setSelected(remaining[0] ?? null); return remaining; }); setDeleteConfirmOpen(false); toast("报告已删除"); }).catch((error) => { console.error(error); toast("报告删除失败，请稍后重试。"); }); };
+function ReportWorkspace({
+  menu,
+  preferences,
+  toast,
+  createOnOpen,
+  onCreated,
+}: {
+  menu: NavigationMenu;
+  preferences: Preferences;
+  toast: (message: string) => void;
+  createOnOpen: boolean;
+  onCreated: () => void;
+}) {
+  const [records, setRecords] = useState<ReportRecord[]>([]);
+  const [selected, setSelected] = useState<ReportRecord | null>(null);
+  const [keyword, setKeyword] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [draftDateFrom, setDraftDateFrom] = useState("");
+  const [draftDateTo, setDraftDateTo] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterPosition, setFilterPosition] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+  const [filterError, setFilterError] = useState("");
+  const [dateEditorOpen, setDateEditorOpen] = useState(false);
+  const [dateEditorPosition, setDateEditorPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+  const [draftRecordDate, setDraftRecordDate] = useState("");
+  const [recordDateError, setRecordDateError] = useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const request = useRef(0);
+  const selectedId = useRef<string | null>(null);
+  const filterButton = useRef<HTMLButtonElement | null>(null);
+  const filterPopover = useRef<HTMLDivElement | null>(null);
+  const recordDateButton = useRef<HTMLButtonElement | null>(null);
+  const recordDatePopover = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    selectedId.current = selected?.id ?? null;
+  }, [selected]);
+  const load = (reset: boolean) => {
+    if (loading && !reset) return;
+    const token = ++request.current;
+    const offset = reset ? 0 : records.length;
+    const limit = reset
+      ? preferences.defaultReportLoadCount
+      : preferences.refreshReportLoadCount;
+    setLoading(true);
+    void invoke<ReportRecord[]>("list_records", {
+      query: {
+        menuId: menu.id,
+        keyword: keyword || null,
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null,
+        tags: null,
+        recordType: null,
+        limit,
+        offset,
+      },
+    })
+      .then((next) => {
+        if (request.current !== token) return;
+        const merged = reset ? next : [...records, ...next];
+        setRecords(merged);
+        setHasMore(next.length === limit);
+        if (
+          reset &&
+          (!selectedId.current ||
+            !next.some((item) => item.id === selectedId.current))
+        )
+          setSelected(next[0] ?? null);
+      })
+      .catch((error) => {
+        console.error(error);
+        toast("报告加载失败，请稍后重试。");
+      })
+      .finally(() => {
+        if (request.current === token) setLoading(false);
+      });
+  };
+  useEffect(() => {
+    const timer = window.setTimeout(() => load(true), 250);
+    return () => window.clearTimeout(timer);
+  }, [menu.id, keyword, dateFrom, dateTo, preferences.defaultReportLoadCount]);
+  const create = () => {
+    const date = new Date();
+    if (menu.reportPeriod === "weekly")
+      date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+    const now = new Date().toISOString();
+    const record: ReportRecord = {
+      id: crypto.randomUUID(),
+      recordType:
+        menu.id === "meeting"
+          ? "meeting"
+          : menu.reportPeriod === "weekly"
+            ? "weekly"
+            : "daily",
+      recordDate: isoDate(date),
+      title: `${menu.label} ${isoDate(date)}`,
+      content: "",
+      tags: [],
+      metadata: {},
+      status: "draft",
+      createdAt: now,
+      updatedAt: now,
+      menuId: menu.id,
+    };
+    setRecords((items) => [record, ...items]);
+    setSelected(record);
+  };
+  useEffect(() => {
+    if (createOnOpen) {
+      create();
+      onCreated();
+    }
+  }, [createOnOpen]);
+  const save = () => {
+    if (!selected) return;
+    const next = {
+      ...selected,
+      updatedAt: new Date().toISOString(),
+      status: "saved" as const,
+    };
+    void invoke<ReportRecord>("save_record", { record: next })
+      .then((saved) => {
+        setSelected(saved);
+        setRecords((items) =>
+          items.map((item) => (item.id === saved.id ? saved : item)),
+        );
+        toast("报告已保存");
+      })
+      .catch((error) => {
+        console.error(error);
+        toast("报告保存失败，请稍后重试。");
+      });
+  };
+  const duplicate = () => {
+    if (!selected) return;
+    const now = new Date().toISOString();
+    const copy: ReportRecord = {
+      ...selected,
+      id: crypto.randomUUID(),
+      recordDate: isoDate(),
+      title: `${selected.title} - 副本`,
+      status: "draft",
+      createdAt: now,
+      updatedAt: now,
+    };
+    void invoke<ReportRecord>("save_record", { record: copy })
+      .then((saved) => {
+        setRecords((items) => [saved, ...items]);
+        setSelected(saved);
+        toast("报告副本已创建");
+      })
+      .catch((error) => {
+        console.error(error);
+        toast("复制报告失败，请稍后重试。");
+      });
+  };
+  const remove = () => {
+    if (!selected) return;
+    const id = selected.id;
+    void invoke("delete_record", { id })
+      .then(() => {
+        setRecords((items) => {
+          const remaining = items.filter((item) => item.id !== id);
+          setSelected(remaining[0] ?? null);
+          return remaining;
+        });
+        setDeleteConfirmOpen(false);
+        toast("报告已删除");
+      })
+      .catch((error) => {
+        console.error(error);
+        toast("报告删除失败，请稍后重试。");
+      });
+  };
   // 以视口为定位基准，让弹层从按钮右侧展开且不受左侧列表滚动容器裁切。
-  const toggleDateFilter = () => { if (filterOpen) { setFilterOpen(false); return; } const range = defaultDateRange(); setDraftDateFrom(range.from); setDraftDateTo(range.to); setFilterError(""); const rect = filterButton.current?.getBoundingClientRect(); if (rect) setFilterPosition({ left: rect.right + 8, top: rect.bottom + 8, width: Math.min(270, window.innerWidth - rect.right - 20) }); setFilterOpen(true); };
-  useEffect(() => { if (!filterOpen) return; const closeOnOutsideClick = (event: MouseEvent) => { const target = event.target as Node; if (!filterPopover.current?.contains(target) && !filterButton.current?.contains(target)) setFilterOpen(false); }; document.addEventListener("mousedown", closeOnOutsideClick); return () => document.removeEventListener("mousedown", closeOnOutsideClick); }, [filterOpen]);
+  const toggleDateFilter = () => {
+    if (filterOpen) {
+      setFilterOpen(false);
+      return;
+    }
+    const range = defaultDateRange();
+    setDraftDateFrom(range.from);
+    setDraftDateTo(range.to);
+    setFilterError("");
+    const rect = filterButton.current?.getBoundingClientRect();
+    if (rect)
+      setFilterPosition({
+        left: rect.right + 8,
+        top: rect.bottom + 8,
+        width: Math.min(270, window.innerWidth - rect.right - 20),
+      });
+    setFilterOpen(true);
+  };
+  useEffect(() => {
+    if (!filterOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        !filterPopover.current?.contains(target) &&
+        !filterButton.current?.contains(target)
+      )
+        setFilterOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [filterOpen]);
+  useEffect(() => {
+    if (!dateEditorOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        !recordDatePopover.current?.contains(target) &&
+        !recordDateButton.current?.contains(target)
+      )
+        setDateEditorOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [dateEditorOpen]);
   // 重置应立即取消已应用的日期范围，并退出筛选弹层，避免草稿值与查询结果不一致。
-  const resetDateFilter = () => { setDateFrom(""); setDateTo(""); setDraftDateFrom(""); setDraftDateTo(""); setFilterError(""); setFilterOpen(false); };
-  const applyDateFilter = () => { if (!isValidIsoDate(draftDateFrom) || !isValidIsoDate(draftDateTo) || draftDateFrom > draftDateTo) { setFilterError("请输入正确的日期！"); return; } setDateFrom(draftDateFrom); setDateTo(draftDateTo); setFilterError(""); setFilterOpen(false); };
-  const applyRecordDate = () => { if (!selected || !isValidIsoDate(draftRecordDate)) { setRecordDateError("请输入正确的日期！"); return; } setSelected({ ...selected, recordDate: draftRecordDate }); setRecordDateError(""); setDateEditorOpen(false); };
+  const resetDateFilter = () => {
+    setDateFrom("");
+    setDateTo("");
+    setDraftDateFrom("");
+    setDraftDateTo("");
+    setFilterError("");
+    setFilterOpen(false);
+  };
+  const applyDateFilter = () => {
+    if (
+      !isValidIsoDate(draftDateFrom) ||
+      !isValidIsoDate(draftDateTo) ||
+      draftDateFrom > draftDateTo
+    ) {
+      setFilterError("请输入正确的日期！");
+      return;
+    }
+    setDateFrom(draftDateFrom);
+    setDateTo(draftDateTo);
+    setFilterError("");
+    setFilterOpen(false);
+  };
+  // 日期确认后立即写入本地记录，避免切换报告或刷新列表时丢失已修改的日期。
+  const applyRecordDate = () => {
+    if (!selected || !isValidIsoDate(draftRecordDate)) {
+      setRecordDateError("请输入正确的日期！");
+      return;
+    }
+    const next = {
+      ...selected,
+      recordDate: draftRecordDate,
+      updatedAt: new Date().toISOString(),
+    };
+    void invoke<ReportRecord>("save_record", { record: next })
+      .then((saved) => {
+        setSelected(saved);
+        setRecords((items) =>
+          items.map((item) => (item.id === saved.id ? saved : item)),
+        );
+        setRecordDateError("");
+        setDateEditorOpen(false);
+        toast("报告日期已修改");
+      })
+      .catch((error) => {
+        console.error(error);
+        toast("报告日期修改失败，请稍后重试。");
+      });
+  };
   // Semi DatePicker 的下拉面板挂载到当前筛选弹层，避免被外部点击检测提前关闭。
   const datePickerContainer = () => filterPopover.current ?? document.body;
-  const updateDraftDate = (setter: (value: string) => void) => (value: string | string[] | Date | Date[] | undefined) => {
-    const singleValue = Array.isArray(value) ? value[0] : value;
-    setter(typeof singleValue === "string" ? singleValue : singleValue ? isoDate(singleValue) : "");
-  };
-  return <div className="report-page"><header className="topbar report-header"><h1>{menu.label}<span> · {periodName(menu.reportPeriod)}</span></h1><button className="primary" onClick={create}>＋ 新建{menu.label}</button></header><section className="report-split"><div className="record-list" onScroll={(event) => { const target = event.currentTarget; if (hasMore && !loading && target.scrollTop + target.clientHeight >= target.scrollHeight - 80) load(false); }}><section className="report-tools"><Input className="report-search-input" size="small" value={keyword} onChange={setKeyword} placeholder="搜索标题或报告内容" aria-label="搜索报告" showClear prefix={<SvgIcon svg={icons.search} />} /><div className="date-filter"><button ref={filterButton} className={`icon-button filter-button ${dateFrom || dateTo ? "is-active" : ""}`} title="筛选日期" aria-label="筛选日期" onClick={toggleDateFilter}><SvgIcon svg={icons.filter} /></button>{filterOpen && <div ref={filterPopover} className="date-popover" style={filterPosition ?? undefined}><label>开始日期<DatePicker className="date-filter-picker" size="small" value={draftDateFrom || undefined} format="yyyy-MM-dd" placeholder="选择开始日期" getPopupContainer={datePickerContainer} onChange={updateDraftDate(setDraftDateFrom)} /></label><label>结束日期<DatePicker className="date-filter-picker" size="small" value={draftDateTo || undefined} format="yyyy-MM-dd" placeholder="选择结束日期" getPopupContainer={datePickerContainer} onChange={updateDraftDate(setDraftDateTo)} /></label><div className="date-filter-actions"><button className="secondary" onClick={resetDateFilter}>重置筛选</button><button className="primary" onClick={applyDateFilter}>开始筛选</button>{filterError && <span className="date-validation" role="alert">{filterError}</span>}</div></div>}</div></section>{records.map((record) => <button key={record.id} className={`record-card ${selected?.id === record.id ? "active" : ""}`} onClick={() => setSelected(record)}><strong>{record.title}</strong><time>{record.recordDate}</time>{record.status === "draft" && <small>草稿</small>}</button>)}{!loading && records.length === 0 && <div className="list-empty"><span>⌕</span><p>暂无符合条件的报告</p></div>}{loading && <div className="loading-more">正在加载…</div>}{!hasMore && records.length > 0 && <div className="loading-more">已加载全部报告</div>}</div><aside className="report-detail">{selected ? <><div className="detail-heading"><div><input value={selected.title} onChange={(event) => setSelected({ ...selected, title: event.target.value })} aria-label="报告标题" /><button type="button" className="record-date-button" onClick={() => { setDraftRecordDate(selected.recordDate); setRecordDateError(""); setDateEditorOpen(true); }}>{selected.recordDate}</button></div><button className="save-button" title="保存（Ctrl+S）" aria-label="保存报告" onClick={save}><SvgIcon svg={icons.save} /></button><button className="save-button duplicate-report-button" title="复制报告" aria-label="复制报告" onClick={duplicate}><SvgIcon svg={icons.copy} /></button><button className="save-button delete-report-button" title="删除报告" aria-label="删除报告" onClick={() => setDeleteConfirmOpen(true)}><SvgIcon svg={icons.trash} /></button></div><VditorEditor record={selected} change={(content) => setSelected((current) => current ? { ...current, content } : current)} save={save} /></> : <div className="detail-empty"><span>▤</span><p>选择一份报告查看详情</p></div>}</aside></section>{dateEditorOpen && <DialogShell title="修改报告日期" onClose={() => setDateEditorOpen(false)}><label className="dialog-field">报告日期<input type="date" value={draftRecordDate} onChange={(event) => setDraftRecordDate(event.target.value)} autoFocus /></label>{recordDateError && <span className="date-validation" role="alert">{recordDateError}</span>}<div className="dialog-actions"><button className="secondary" onClick={() => setDateEditorOpen(false)}>取消</button><button className="primary" onClick={applyRecordDate}>确定</button></div></DialogShell>}{deleteConfirmOpen && selected && <DialogShell title="删除报告" onClose={() => setDeleteConfirmOpen(false)}><p className="dialog-description">确定删除“{selected.title || "未命名报告"}”吗？删除后不可恢复。</p><div className="dialog-actions"><button className="secondary" onClick={() => setDeleteConfirmOpen(false)}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></DialogShell>}</div>;
+  const recordDatePickerContainer = () =>
+    recordDatePopover.current ?? document.body;
+  const updateDraftDate =
+    (setter: (value: string) => void) =>
+    (value: string | string[] | Date | Date[] | undefined) => {
+      const singleValue = Array.isArray(value) ? value[0] : value;
+      setter(
+        typeof singleValue === "string"
+          ? singleValue
+          : singleValue
+            ? isoDate(singleValue)
+            : "",
+      );
+    };
+  return (
+    <div className="report-page">
+      <header className="topbar report-header">
+        <h1>
+          {menu.label}
+          <span> · {periodName(menu.reportPeriod)}</span>
+        </h1>
+        <button className="primary" onClick={create}>
+          ＋ 新建{menu.label}
+        </button>
+      </header>
+      <section className="report-split">
+        <div
+          className="record-list"
+          onScroll={(event) => {
+            const target = event.currentTarget;
+            if (
+              hasMore &&
+              !loading &&
+              target.scrollTop + target.clientHeight >= target.scrollHeight - 80
+            )
+              load(false);
+          }}
+        >
+          <section className="report-tools">
+            <Input
+              className="report-search-input"
+              size="small"
+              value={keyword}
+              onChange={setKeyword}
+              placeholder="搜索标题或报告内容"
+              aria-label="搜索报告"
+              showClear
+              prefix={<SvgIcon svg={icons.search} />}
+            />
+            <div className="date-filter">
+              <button
+                ref={filterButton}
+                className={`icon-button filter-button ${dateFrom || dateTo ? "is-active" : ""}`}
+                title="筛选日期"
+                aria-label="筛选日期"
+                onClick={toggleDateFilter}
+              >
+                <SvgIcon svg={icons.filter} />
+              </button>
+              {filterOpen && (
+                <div
+                  ref={filterPopover}
+                  className="date-popover"
+                  style={filterPosition ?? undefined}
+                >
+                  <label>
+                    开始日期
+                    <DatePicker
+                      className="date-filter-picker"
+                      size="small"
+                      value={draftDateFrom || undefined}
+                      format="yyyy-MM-dd"
+                      placeholder="选择开始日期"
+                      getPopupContainer={datePickerContainer}
+                      onChange={updateDraftDate(setDraftDateFrom)}
+                    />
+                  </label>
+                  <label>
+                    结束日期
+                    <DatePicker
+                      className="date-filter-picker"
+                      size="small"
+                      value={draftDateTo || undefined}
+                      format="yyyy-MM-dd"
+                      placeholder="选择结束日期"
+                      getPopupContainer={datePickerContainer}
+                      onChange={updateDraftDate(setDraftDateTo)}
+                    />
+                  </label>
+                  <div className="date-filter-actions">
+                    <button className="secondary" onClick={resetDateFilter}>
+                      重置筛选
+                    </button>
+                    <button className="primary" onClick={applyDateFilter}>
+                      开始筛选
+                    </button>
+                    {filterError && (
+                      <span className="date-validation" role="alert">
+                        {filterError}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+          {records.map((record) => (
+            <button
+              key={record.id}
+              className={`record-card ${selected?.id === record.id ? "active" : ""}`}
+              onClick={() => setSelected(record)}
+            >
+              <strong>{record.title}</strong>
+              <time>{record.recordDate}</time>
+              {record.status === "draft" && <small>草稿</small>}
+            </button>
+          ))}
+          {!loading && records.length === 0 && (
+            <div className="list-empty">
+              <span>⌕</span>
+              <p>暂无符合条件的报告</p>
+            </div>
+          )}
+          {loading && <div className="loading-more">正在加载…</div>}
+          {!hasMore && records.length > 0 && (
+            <div className="loading-more">已加载全部报告</div>
+          )}
+        </div>
+        <aside className="report-detail">
+          {selected ? (
+            <>
+              <div className="detail-heading">
+                <div>
+                  <input
+                    value={selected.title}
+                    onChange={(event) =>
+                      setSelected({ ...selected, title: event.target.value })
+                    }
+                    aria-label="报告标题"
+                  />
+                  <button
+                    ref={recordDateButton}
+                    type="button"
+                    className="record-date-button"
+                    onClick={() => {
+                      const rect =
+                        recordDateButton.current?.getBoundingClientRect();
+                      if (rect)
+                        setDateEditorPosition({
+                          left: rect.left,
+                          top: rect.bottom + 8,
+                        });
+                      setDraftRecordDate(selected.recordDate);
+                      setRecordDateError("");
+                      setDateEditorOpen(true);
+                    }}
+                  >
+                    {selected.recordDate}
+                  </button>
+                </div>
+                <button
+                  className="save-button"
+                  title="保存（Ctrl+S）"
+                  aria-label="保存报告"
+                  onClick={save}
+                >
+                  <SvgIcon svg={icons.save} />
+                </button>
+                <button
+                  className="save-button duplicate-report-button"
+                  title="复制报告"
+                  aria-label="复制报告"
+                  onClick={duplicate}
+                >
+                  <SvgIcon svg={icons.copy} />
+                </button>
+                <button
+                  className="save-button delete-report-button"
+                  title="删除报告"
+                  aria-label="删除报告"
+                  onClick={() => setDeleteConfirmOpen(true)}
+                >
+                  <SvgIcon svg={icons.trash} />
+                </button>
+              </div>
+              <VditorEditor
+                record={selected}
+                change={(content) =>
+                  setSelected((current) =>
+                    current ? { ...current, content } : current,
+                  )
+                }
+                save={save}
+              />
+            </>
+          ) : (
+            <div className="detail-empty">
+              <span>▤</span>
+              <p>选择一份报告查看详情</p>
+            </div>
+          )}
+        </aside>
+      </section>
+      {dateEditorOpen && (
+        <div
+          ref={recordDatePopover}
+          className="record-date-popover"
+          style={dateEditorPosition ?? undefined}
+          role="dialog"
+          aria-label="修改报告日期"
+        >
+          <label>
+            报告日期
+            <DatePicker
+              className="record-date-picker"
+              size="small"
+              value={draftRecordDate || undefined}
+              format="yyyy-MM-dd"
+              inputReadOnly={false}
+              placeholder="输入或选择日期"
+              getPopupContainer={recordDatePickerContainer}
+              onChange={updateDraftDate(setDraftRecordDate)}
+              autoFocus
+            />
+          </label>
+          {recordDateError && (
+            <span className="date-validation" role="alert">
+              {recordDateError}
+            </span>
+          )}
+          <div className="record-date-actions">
+            <button
+              className="secondary"
+              onClick={() => setDateEditorOpen(false)}
+            >
+              取消
+            </button>
+            <button className="primary" onClick={applyRecordDate}>
+              确定
+            </button>
+          </div>
+        </div>
+      )}
+      {deleteConfirmOpen && selected && (
+        <DialogShell
+          title="删除报告"
+          onClose={() => setDeleteConfirmOpen(false)}
+        >
+          <p className="dialog-description">
+            确定删除“{selected.title || "未命名报告"}”吗？删除后不可恢复。
+          </p>
+          <div className="dialog-actions">
+            <button
+              className="secondary"
+              onClick={() => setDeleteConfirmOpen(false)}
+            >
+              取消
+            </button>
+            <button className="danger-button" onClick={remove}>
+              确认删除
+            </button>
+          </div>
+        </DialogShell>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
-  const [preferences, setPreferences] = useState<Preferences | null>(null); const [page, setPage] = useState("home"); const [createOnOpen, setCreateOnOpen] = useState<string | null>(null); const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
-  const toast = (message: string) => { const id = Date.now() + Math.random(); setToasts((current) => [...current, { id, message }]); window.setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 3200); };
-  useEffect(() => { void invoke("show_main_window"); void invoke<Preferences>("get_app_preferences").then((saved) => { setPreferences(saved); const visible = saved.menus.filter((item) => !item.isHidden); setPage(visible.some((item) => item.id === saved.defaultPageId) ? saved.defaultPageId : visible[0]?.id ?? "home"); }).catch(console.error); }, []);
-  if (!preferences) return <div className="app-loading">正在加载本地工作记录…</div>;
-  const persist = (next: Preferences, message = "已保存设置") => { setPreferences(next); void invoke<Preferences>("save_app_preferences", { preferences: next }).then((saved) => { setPreferences(saved); toast(message); }).catch((error) => { console.error(error); toast("设置保存失败，请稍后重试。"); }); };
-  const applySaved = (next: Preferences, message = "已保存设置") => { setPreferences(next); toast(message); };
-  const visible = preferences.menus.filter((item) => !item.isHidden); const active = preferences.menus.find((item) => item.id === page); const isReport = Boolean(active && page !== "home" && page !== "settings");
-  const createDaily = () => { setCreateOnOpen("daily"); setPage("daily"); };
-  return <div className={`app-shell ${preferences.sidebarCollapsed ? "sidebar-collapsed" : ""}`}><aside className="sidebar"><div className="sidebar-toolbar"><span className="brand-name">ReportManager</span><div className="toolbar-actions"><button className="toolbar-icon" title={preferences.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} onClick={() => persist({ ...preferences, sidebarCollapsed: !preferences.sidebarCollapsed })}><SvgIcon svg={icons.menu} /></button><button className="toolbar-icon search-button" title="搜索" onClick={() => toast("请进入报告菜单使用搜索")}><SvgIcon svg={icons.search} /></button></div></div><nav aria-label="主导航">{visible.map((item) => <button key={item.id} title={preferences.sidebarCollapsed ? item.label : undefined} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}><SvgIcon svg={item.iconSvg} /><span className="nav-label">{item.label}</span></button>)}</nav><div className="sidebar-bottom"><span className="offline-dot" /><span className="offline-text">所有内容仅保存在本机</span></div></aside><main className={`main-content ${isReport ? "report-content" : ""}`}>{page === "home" && <><header className="topbar"><h1>首页</h1><button className="primary" onClick={createDaily}>＋ 新建今日日报</button></header><Home onCreate={createDaily} /></>}{isReport && active && <ReportWorkspace key={active.id} menu={active} preferences={preferences} toast={toast} createOnOpen={createOnOpen === active.id} onCreated={() => setCreateOnOpen(null)} />}{page === "settings" && <><header className="topbar"><h1>设置</h1></header><Settings preferences={preferences} persist={persist} applySaved={applySaved} setPage={setPage} /></>}</main><div className="toast-stack" aria-live="polite">{toasts.map((item) => <button key={item.id} className="toast" onClick={() => setToasts((current) => current.filter((toastItem) => toastItem.id !== item.id))}>{item.message}</button>)}</div></div>;
+  const [preferences, setPreferences] = useState<Preferences | null>(null);
+  const [page, setPage] = useState("home");
+  const [createOnOpen, setCreateOnOpen] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
+  const toast = (message: string) => {
+    const id = Date.now() + Math.random();
+    setToasts((current) => [...current, { id, message }]);
+    window.setTimeout(
+      () => setToasts((current) => current.filter((item) => item.id !== id)),
+      3200,
+    );
+  };
+  useEffect(() => {
+    void invoke("show_main_window");
+    void invoke<Preferences>("get_app_preferences")
+      .then((saved) => {
+        setPreferences(saved);
+        const visible = saved.menus.filter((item) => !item.isHidden);
+        setPage(
+          visible.some((item) => item.id === saved.defaultPageId)
+            ? saved.defaultPageId
+            : (visible[0]?.id ?? "home"),
+        );
+      })
+      .catch(console.error);
+  }, []);
+  if (!preferences)
+    return <div className="app-loading">正在加载本地工作记录…</div>;
+  const persist = (next: Preferences, message = "已保存设置") => {
+    setPreferences(next);
+    void invoke<Preferences>("save_app_preferences", { preferences: next })
+      .then((saved) => {
+        setPreferences(saved);
+        toast(message);
+      })
+      .catch((error) => {
+        console.error(error);
+        toast("设置保存失败，请稍后重试。");
+      });
+  };
+  const applySaved = (next: Preferences, message = "已保存设置") => {
+    setPreferences(next);
+    toast(message);
+  };
+  const visible = preferences.menus.filter((item) => !item.isHidden);
+  const active = preferences.menus.find((item) => item.id === page);
+  const isReport = Boolean(active && page !== "home" && page !== "settings");
+  const createDaily = () => {
+    setCreateOnOpen("daily");
+    setPage("daily");
+  };
+  return (
+    <div
+      className={`app-shell ${preferences.sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+    >
+      <aside className="sidebar">
+        <div className="sidebar-toolbar">
+          <span className="brand-name">ReportManager</span>
+          <div className="toolbar-actions">
+            <button
+              className="toolbar-icon"
+              title={preferences.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              onClick={() =>
+                persist({
+                  ...preferences,
+                  sidebarCollapsed: !preferences.sidebarCollapsed,
+                })
+              }
+            >
+              <SvgIcon svg={icons.menu} />
+            </button>
+            <button
+              className="toolbar-icon search-button"
+              title="搜索"
+              onClick={() => toast("请进入报告菜单使用搜索")}
+            >
+              <SvgIcon svg={icons.search} />
+            </button>
+          </div>
+        </div>
+        <nav aria-label="主导航">
+          {visible.map((item) => (
+            <button
+              key={item.id}
+              title={preferences.sidebarCollapsed ? item.label : undefined}
+              className={`nav-item ${page === item.id ? "active" : ""}`}
+              onClick={() => setPage(item.id)}
+            >
+              <SvgIcon svg={item.iconSvg} />
+              <span className="nav-label">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <span className="offline-dot" />
+          <span className="offline-text">所有内容仅保存在本机</span>
+        </div>
+      </aside>
+      <main className={`main-content ${isReport ? "report-content" : ""}`}>
+        {page === "home" && (
+          <>
+            <header className="topbar">
+              <h1>首页</h1>
+              <button className="primary" onClick={createDaily}>
+                ＋ 新建今日日报
+              </button>
+            </header>
+            <Home onCreate={createDaily} />
+          </>
+        )}
+        {isReport && active && (
+          <ReportWorkspace
+            key={active.id}
+            menu={active}
+            preferences={preferences}
+            toast={toast}
+            createOnOpen={createOnOpen === active.id}
+            onCreated={() => setCreateOnOpen(null)}
+          />
+        )}
+        {page === "settings" && (
+          <>
+            <header className="topbar">
+              <h1>设置</h1>
+            </header>
+            <Settings
+              preferences={preferences}
+              persist={persist}
+              applySaved={applySaved}
+              setPage={setPage}
+            />
+          </>
+        )}
+      </main>
+      <div className="toast-stack" aria-live="polite">
+        {toasts.map((item) => (
+          <button
+            key={item.id}
+            className="toast"
+            onClick={() =>
+              setToasts((current) =>
+                current.filter((toastItem) => toastItem.id !== item.id),
+              )
+            }
+          >
+            {item.message}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
-function Home({ onCreate }: { onCreate: () => void }) { return <div className="page-stack"><section className="welcome-card"><div><p className="muted">今天是 {today}</p><h2>从一份清晰的日报开始</h2><p>记录进展、风险与下一步计划，让工作脉络随时可追溯。</p><button className="primary" onClick={onCreate}>创建今日日报</button></div><span className="calendar">20</span></section><section className="status-grid">{[["今日日报", "快速记录"], ["本周周报", "集中整理"], ["今日例会", "持续跟进"]].map(([label, value]) => <article className="status-card" key={label}><p>{label}</p><h3>{value}</h3></article>)}</section></div>; }
+function Home({ onCreate }: { onCreate: () => void }) {
+  return (
+    <div className="page-stack">
+      <section className="welcome-card">
+        <div>
+          <p className="muted">今天是 {today}</p>
+          <h2>从一份清晰的日报开始</h2>
+          <p>记录进展、风险与下一步计划，让工作脉络随时可追溯。</p>
+          <button className="primary" onClick={onCreate}>
+            创建今日日报
+          </button>
+        </div>
+        <span className="calendar">20</span>
+      </section>
+      <section className="status-grid">
+        {[
+          ["今日日报", "快速记录"],
+          ["本周周报", "集中整理"],
+          ["今日例会", "持续跟进"],
+        ].map(([label, value]) => (
+          <article className="status-card" key={label}>
+            <p>{label}</p>
+            <h3>{value}</h3>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
 
-function Settings({ preferences, persist, applySaved, setPage }: { preferences: Preferences; persist: (next: Preferences, message?: string) => void; applySaved: (next: Preferences, message?: string) => void; setPage: (page: string) => void }) {
-  const [dialog, setDialog] = useState<Dialog>(null); const [selected, setSelected] = useState<NavigationMenu | null>(null); const [label, setLabel] = useState(""); const [svg, setSvg] = useState(icons.daily); const [period, setPeriod] = useState<ReportPeriod>("daily");
-  const edit = (menu: NavigationMenu, type: "rename" | "icon" | "period") => { setSelected(menu); setLabel(menu.label); setSvg(menu.iconSvg); setPeriod(menu.reportPeriod); setDialog(type); };
-  const saveMenu = (changes: Partial<NavigationMenu>, message: string) => { if (!selected) return; persist({ ...preferences, menus: preferences.menus.map((menu) => menu.id === selected.id ? { ...menu, ...changes } : menu) }, message); setDialog("manage"); };
-  const toggle = (item: NavigationMenu) => { if (item.id === "home" || item.id === "settings") return; persist({ ...preferences, menus: preferences.menus.map((menu) => menu.id === item.id ? { ...menu, isHidden: !menu.isHidden } : menu) }, item.isHidden ? "菜单已显示" : "菜单已隐藏"); };
-  const add = () => { const name = label.trim(); if (!name) return; const menu: NavigationMenu = { id: `custom-${crypto.randomUUID()}`, label: name, iconSvg: svg, sortOrder: preferences.menus.length - 1, isSystem: false, isHidden: false, reportPeriod: "daily" }; void invoke<Preferences>("create_navigation_menu", { menu }).then((next) => { applySaved(next, "菜单已添加"); setDialog("manage"); }).catch((error) => window.alert(String(error))); };
-  const remove = () => { if (!selected) return; void invoke<Preferences>("delete_navigation_menu", { id: selected.id }).then((next) => { if (preferences.defaultPageId === selected.id) persist({ ...next, defaultPageId: "home" }, "菜单已删除"); else applySaved(next, "菜单已删除"); setPage("settings"); setDialog("manage"); }).catch((error) => window.alert(String(error))); };
+function Settings({
+  preferences,
+  persist,
+  applySaved,
+  setPage,
+}: {
+  preferences: Preferences;
+  persist: (next: Preferences, message?: string) => void;
+  applySaved: (next: Preferences, message?: string) => void;
+  setPage: (page: string) => void;
+}) {
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [selected, setSelected] = useState<NavigationMenu | null>(null);
+  const [label, setLabel] = useState("");
+  const [svg, setSvg] = useState(icons.daily);
+  const [period, setPeriod] = useState<ReportPeriod>("daily");
+  const edit = (menu: NavigationMenu, type: "rename" | "icon" | "period") => {
+    setSelected(menu);
+    setLabel(menu.label);
+    setSvg(menu.iconSvg);
+    setPeriod(menu.reportPeriod);
+    setDialog(type);
+  };
+  const saveMenu = (changes: Partial<NavigationMenu>, message: string) => {
+    if (!selected) return;
+    persist(
+      {
+        ...preferences,
+        menus: preferences.menus.map((menu) =>
+          menu.id === selected.id ? { ...menu, ...changes } : menu,
+        ),
+      },
+      message,
+    );
+    setDialog("manage");
+  };
+  const toggle = (item: NavigationMenu) => {
+    if (item.id === "home" || item.id === "settings") return;
+    persist(
+      {
+        ...preferences,
+        menus: preferences.menus.map((menu) =>
+          menu.id === item.id ? { ...menu, isHidden: !menu.isHidden } : menu,
+        ),
+      },
+      item.isHidden ? "菜单已显示" : "菜单已隐藏",
+    );
+  };
+  const add = () => {
+    const name = label.trim();
+    if (!name) return;
+    const menu: NavigationMenu = {
+      id: `custom-${crypto.randomUUID()}`,
+      label: name,
+      iconSvg: svg,
+      sortOrder: preferences.menus.length - 1,
+      isSystem: false,
+      isHidden: false,
+      reportPeriod: "daily",
+    };
+    void invoke<Preferences>("create_navigation_menu", { menu })
+      .then((next) => {
+        applySaved(next, "菜单已添加");
+        setDialog("manage");
+      })
+      .catch((error) => window.alert(String(error)));
+  };
+  const remove = () => {
+    if (!selected) return;
+    void invoke<Preferences>("delete_navigation_menu", { id: selected.id })
+      .then((next) => {
+        if (preferences.defaultPageId === selected.id)
+          persist({ ...next, defaultPageId: "home" }, "菜单已删除");
+        else applySaved(next, "菜单已删除");
+        setPage("settings");
+        setDialog("manage");
+      })
+      .catch((error) => window.alert(String(error)));
+  };
   const visible = preferences.menus.filter((item) => !item.isHidden);
-  const saveCount = (key: "defaultReportLoadCount" | "refreshReportLoadCount", value: string) => { const parsed = Number(value); if (Number.isFinite(parsed)) persist({ ...preferences, [key]: Math.min(100, Math.max(1, Math.round(parsed))) }, "报告加载设置已更新"); };
+  const saveCount = (
+    key: "defaultReportLoadCount" | "refreshReportLoadCount",
+    value: string,
+  ) => {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed))
+      persist(
+        {
+          ...preferences,
+          [key]: Math.min(100, Math.max(1, Math.round(parsed))),
+        },
+        "报告加载设置已更新",
+      );
+  };
   // 下拉选择统一使用 Semi Select，避免设置页和对话框出现原生控件样式差异。
   const selectValue = (value: unknown) => String(value ?? "");
-  return <div className="page-stack settings-page"><section className="panel settings"><h2>偏好设置</h2><label>启动后默认进入页面<Select className="settings-select" value={visible.some((item) => item.id === preferences.defaultPageId) ? preferences.defaultPageId : undefined} placeholder="请选择可见菜单" optionList={visible.map((item) => ({ value: item.id, label: item.label }))} onChange={(value) => persist({ ...preferences, defaultPageId: selectValue(value) })} /></label><label>界面语言<Select className="settings-select" value="zh-CN" optionList={[{ value: "zh-CN", label: "简体中文" }]} /></label><label>每周起始日<Select className="settings-select" value={preferences.weekStart} optionList={[{ value: "monday", label: "周一" }, { value: "sunday", label: "周日" }]} onChange={(value) => persist({ ...preferences, weekStart: selectValue(value) })} /></label><label>默认导出目录<input value={preferences.exportDirectory} placeholder="尚未设置，导出时选择" onChange={(event) => persist({ ...preferences, exportDirectory: event.target.value })} /></label></section><section className="panel editor-settings settings"><h2>编辑器设置</h2><label>显示模式<Select className="settings-select" value={preferences.editorMode} optionList={editorModes} onChange={(value) => persist({ ...preferences, editorMode: selectValue(value) as EditorMode }, "编辑器显示模式已更新")} /></label></section><section className="panel menu-settings"><div className="section-heading"><div><h2>菜单管理</h2><p>管理菜单显示、报告周期、名称和图标；首页始终置顶，设置始终置底。</p></div><button className="secondary" onClick={() => setDialog("manage")}>菜单管理</button></div></section><section className="panel settings-other"><h2>其他</h2><div className="other-settings-grid"><label className="number-setting"><span><strong>默认加载报告条数</strong><small>首次进入或重新筛选时加载的数量。</small></span><input type="number" min="1" max="100" value={preferences.defaultReportLoadCount} onChange={(event) => saveCount("defaultReportLoadCount", event.target.value)} /></label><label className="number-setting"><span><strong>刷新加载报告条数</strong><small>滚动到底部后追加加载的数量。</small></span><input type="number" min="1" max="100" value={preferences.refreshReportLoadCount} onChange={(event) => saveCount("refreshReportLoadCount", event.target.value)} /></label><label className="checkbox-setting"><input type="checkbox" checked={preferences.minimizeToTray} onChange={(event) => persist({ ...preferences, minimizeToTray: event.target.checked }, "关闭窗口行为已更新")} /><span><strong>关闭窗口时最小化到系统托盘</strong><small>开启后关闭按钮隐藏主窗口；关闭后直接退出程序。</small></span></label></div></section><section className="panel setting-row"><div><h3>本地数据备份</h3><p>导出全部数据以便备份或迁移。内容不会上传到网络。</p></div><button className="secondary">导出全部数据</button></section>
-    {dialog === "manage" && <DialogShell title="菜单管理" onClose={() => setDialog(null)}><p className="dialog-description">拖拽左侧手柄可调整菜单顺序；首页固定在顶部，设置固定在底部。</p><SortableNavigationMenus menus={preferences.menus} order={preferences.menuActionOrder} toggle={toggle} edit={edit} remove={(menu) => { setSelected(menu); setDialog("delete"); }} onSorted={(menus) => persist({ ...preferences, menus }, "菜单顺序已更新")} /><div className="manage-dialog-actions"><button className="secondary" onClick={() => setDialog("sort")}>修改按钮功能顺序</button><button className="secondary" onClick={() => { setLabel(""); setSvg(icons.daily); setDialog("add"); }}>＋ 添加菜单</button></div></DialogShell>}
-    {dialog === "sort" && <DialogShell title="修改按钮功能顺序" onClose={() => setDialog("manage")}><p className="dialog-description">水平拖拽按钮调整功能顺序，松开后立即保存。</p><SortMenuActions actions={preferences.menuActionOrder} onSorted={(menuActionOrder) => persist({ ...preferences, menuActionOrder }, "按钮功能顺序已更新")} /><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>完成</button></div></DialogShell>}
-    {dialog === "add" && <DialogShell title="添加菜单" onClose={() => setDialog("manage")}><label className="dialog-field">菜单名称<input value={label} onChange={(event) => setLabel(event.target.value)} autoFocus /></label><label className="dialog-field">菜单图标<Select className="settings-select" value={svg} optionList={iconChoices.map((item) => ({ value: item.svg, label: item.name }))} onChange={(value) => setSvg(selectValue(value))} /></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" disabled={!label.trim()} onClick={add}>添加菜单</button></div></DialogShell>}
-    {dialog === "rename" && selected && <DialogShell title="重命名菜单" onClose={() => setDialog("manage")}><label className="dialog-field">新名称<input value={label} onChange={(event) => setLabel(event.target.value)} autoFocus /></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" disabled={!label.trim()} onClick={() => saveMenu({ label: label.trim() }, "菜单名称已更新")}>保存</button></div></DialogShell>}
-    {dialog === "icon" && selected && <DialogShell title="修改菜单图标" onClose={() => setDialog("manage")}><label className="dialog-field">菜单图标<Select className="settings-select" value={svg} optionList={iconChoices.map((item) => ({ value: item.svg, label: item.name }))} onChange={(value) => setSvg(selectValue(value))} /></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" onClick={() => saveMenu({ iconSvg: svg }, "菜单图标已更新")}>保存</button></div></DialogShell>}
-    {dialog === "period" && selected && <DialogShell title="报告周期" onClose={() => setDialog("manage")}><label className="dialog-field">报告周期<Select className="settings-select" value={period} optionList={periods} onChange={(value) => setPeriod(selectValue(value) as ReportPeriod)} /></label><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="primary" onClick={() => saveMenu({ reportPeriod: period }, "报告周期已更新")}>保存</button></div></DialogShell>}
-    {dialog === "delete" && selected && <DialogShell title="删除菜单" onClose={() => setDialog("manage")}><p className="dialog-description">确定删除“{selected.label}”吗？仅可删除没有关联报告的自定义菜单。</p><div className="dialog-actions"><button className="secondary" onClick={() => setDialog("manage")}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></DialogShell>}</div>;
+  return (
+    <div className="page-stack settings-page">
+      <section className="panel settings">
+        <h2>偏好设置</h2>
+        <label>
+          启动后默认进入页面
+          <Select
+            className="settings-select"
+            value={
+              visible.some((item) => item.id === preferences.defaultPageId)
+                ? preferences.defaultPageId
+                : undefined
+            }
+            placeholder="请选择可见菜单"
+            optionList={visible.map((item) => ({
+              value: item.id,
+              label: item.label,
+            }))}
+            onChange={(value) =>
+              persist({ ...preferences, defaultPageId: selectValue(value) })
+            }
+          />
+        </label>
+        <label>
+          界面语言
+          <Select
+            className="settings-select"
+            value="zh-CN"
+            optionList={[{ value: "zh-CN", label: "简体中文" }]}
+          />
+        </label>
+        <label>
+          每周起始日
+          <Select
+            className="settings-select"
+            value={preferences.weekStart}
+            optionList={[
+              { value: "monday", label: "周一" },
+              { value: "sunday", label: "周日" },
+            ]}
+            onChange={(value) =>
+              persist({ ...preferences, weekStart: selectValue(value) })
+            }
+          />
+        </label>
+        <label>
+          默认导出目录
+          <input
+            value={preferences.exportDirectory}
+            placeholder="尚未设置，导出时选择"
+            onChange={(event) =>
+              persist({ ...preferences, exportDirectory: event.target.value })
+            }
+          />
+        </label>
+      </section>
+      <section className="panel editor-settings settings">
+        <h2>编辑器设置</h2>
+        <label>
+          显示模式
+          <Select
+            className="settings-select"
+            value={preferences.editorMode}
+            optionList={editorModes}
+            onChange={(value) =>
+              persist(
+                {
+                  ...preferences,
+                  editorMode: selectValue(value) as EditorMode,
+                },
+                "编辑器显示模式已更新",
+              )
+            }
+          />
+        </label>
+      </section>
+      <section className="panel menu-settings">
+        <div className="section-heading">
+          <div>
+            <h2>菜单管理</h2>
+            <p>
+              管理菜单显示、报告周期、名称和图标；首页始终置顶，设置始终置底。
+            </p>
+          </div>
+          <button className="secondary" onClick={() => setDialog("manage")}>
+            菜单管理
+          </button>
+        </div>
+      </section>
+      <section className="panel settings-other">
+        <h2>其他</h2>
+        <div className="other-settings-grid">
+          <label className="number-setting">
+            <span>
+              <strong>默认加载报告条数</strong>
+              <small>首次进入或重新筛选时加载的数量。</small>
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={preferences.defaultReportLoadCount}
+              onChange={(event) =>
+                saveCount("defaultReportLoadCount", event.target.value)
+              }
+            />
+          </label>
+          <label className="number-setting">
+            <span>
+              <strong>刷新加载报告条数</strong>
+              <small>滚动到底部后追加加载的数量。</small>
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={preferences.refreshReportLoadCount}
+              onChange={(event) =>
+                saveCount("refreshReportLoadCount", event.target.value)
+              }
+            />
+          </label>
+          <label className="checkbox-setting">
+            <input
+              type="checkbox"
+              checked={preferences.minimizeToTray}
+              onChange={(event) =>
+                persist(
+                  { ...preferences, minimizeToTray: event.target.checked },
+                  "关闭窗口行为已更新",
+                )
+              }
+            />
+            <span>
+              <strong>关闭窗口时最小化到系统托盘</strong>
+              <small>开启后关闭按钮隐藏主窗口；关闭后直接退出程序。</small>
+            </span>
+          </label>
+        </div>
+      </section>
+      <section className="panel setting-row">
+        <div>
+          <h3>本地数据备份</h3>
+          <p>导出全部数据以便备份或迁移。内容不会上传到网络。</p>
+        </div>
+        <button className="secondary">导出全部数据</button>
+      </section>
+      {dialog === "manage" && (
+        <DialogShell title="菜单管理" onClose={() => setDialog(null)}>
+          <p className="dialog-description">
+            拖拽左侧手柄可调整菜单顺序；首页固定在顶部，设置固定在底部。
+          </p>
+          <SortableNavigationMenus
+            menus={preferences.menus}
+            order={preferences.menuActionOrder}
+            toggle={toggle}
+            edit={edit}
+            remove={(menu) => {
+              setSelected(menu);
+              setDialog("delete");
+            }}
+            onSorted={(menus) =>
+              persist({ ...preferences, menus }, "菜单顺序已更新")
+            }
+          />
+          <div className="manage-dialog-actions">
+            <button className="secondary" onClick={() => setDialog("sort")}>
+              修改按钮功能顺序
+            </button>
+            <button
+              className="secondary"
+              onClick={() => {
+                setLabel("");
+                setSvg(icons.daily);
+                setDialog("add");
+              }}
+            >
+              ＋ 添加菜单
+            </button>
+          </div>
+        </DialogShell>
+      )}
+      {dialog === "sort" && (
+        <DialogShell
+          title="修改按钮功能顺序"
+          onClose={() => setDialog("manage")}
+        >
+          <p className="dialog-description">
+            水平拖拽按钮调整功能顺序，松开后立即保存。
+          </p>
+          <SortMenuActions
+            actions={preferences.menuActionOrder}
+            onSorted={(menuActionOrder) =>
+              persist({ ...preferences, menuActionOrder }, "按钮功能顺序已更新")
+            }
+          />
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setDialog("manage")}>
+              完成
+            </button>
+          </div>
+        </DialogShell>
+      )}
+      {dialog === "add" && (
+        <DialogShell title="添加菜单" onClose={() => setDialog("manage")}>
+          <label className="dialog-field">
+            菜单名称
+            <input
+              value={label}
+              onChange={(event) => setLabel(event.target.value)}
+              autoFocus
+            />
+          </label>
+          <label className="dialog-field">
+            菜单图标
+            <Select
+              className="settings-select"
+              value={svg}
+              optionList={iconChoices.map((item) => ({
+                value: item.svg,
+                label: item.name,
+              }))}
+              onChange={(value) => setSvg(selectValue(value))}
+            />
+          </label>
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setDialog("manage")}>
+              取消
+            </button>
+            <button className="primary" disabled={!label.trim()} onClick={add}>
+              添加菜单
+            </button>
+          </div>
+        </DialogShell>
+      )}
+      {dialog === "rename" && selected && (
+        <DialogShell title="重命名菜单" onClose={() => setDialog("manage")}>
+          <label className="dialog-field">
+            新名称
+            <input
+              value={label}
+              onChange={(event) => setLabel(event.target.value)}
+              autoFocus
+            />
+          </label>
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setDialog("manage")}>
+              取消
+            </button>
+            <button
+              className="primary"
+              disabled={!label.trim()}
+              onClick={() =>
+                saveMenu({ label: label.trim() }, "菜单名称已更新")
+              }
+            >
+              保存
+            </button>
+          </div>
+        </DialogShell>
+      )}
+      {dialog === "icon" && selected && (
+        <DialogShell title="修改菜单图标" onClose={() => setDialog("manage")}>
+          <label className="dialog-field">
+            菜单图标
+            <Select
+              className="settings-select"
+              value={svg}
+              optionList={iconChoices.map((item) => ({
+                value: item.svg,
+                label: item.name,
+              }))}
+              onChange={(value) => setSvg(selectValue(value))}
+            />
+          </label>
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setDialog("manage")}>
+              取消
+            </button>
+            <button
+              className="primary"
+              onClick={() => saveMenu({ iconSvg: svg }, "菜单图标已更新")}
+            >
+              保存
+            </button>
+          </div>
+        </DialogShell>
+      )}
+      {dialog === "period" && selected && (
+        <DialogShell title="报告周期" onClose={() => setDialog("manage")}>
+          <label className="dialog-field">
+            报告周期
+            <Select
+              className="settings-select"
+              value={period}
+              optionList={periods}
+              onChange={(value) =>
+                setPeriod(selectValue(value) as ReportPeriod)
+              }
+            />
+          </label>
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setDialog("manage")}>
+              取消
+            </button>
+            <button
+              className="primary"
+              onClick={() =>
+                saveMenu({ reportPeriod: period }, "报告周期已更新")
+              }
+            >
+              保存
+            </button>
+          </div>
+        </DialogShell>
+      )}
+      {dialog === "delete" && selected && (
+        <DialogShell title="删除菜单" onClose={() => setDialog("manage")}>
+          <p className="dialog-description">
+            确定删除“{selected.label}”吗？仅可删除没有关联报告的自定义菜单。
+          </p>
+          <div className="dialog-actions">
+            <button className="secondary" onClick={() => setDialog("manage")}>
+              取消
+            </button>
+            <button className="danger-button" onClick={remove}>
+              确认删除
+            </button>
+          </div>
+        </DialogShell>
+      )}
+    </div>
+  );
 }
