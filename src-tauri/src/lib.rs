@@ -12,7 +12,8 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow, Window, WindowEvent,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, Window, WindowEvent,
 };
 
 const TRAY_SHOW_WINDOW_ID: &str = "show-main-window";
@@ -21,6 +22,9 @@ const WINDOW_CONFIG_FILE: &str = "config.json";
 const LEGACY_WINDOW_SIZE_CONFIG_FILE: &str = "window-size.json";
 const MIN_WINDOW_WIDTH: f64 = 980.0;
 const MIN_WINDOW_HEIGHT: f64 = 650.0;
+/// Labels for report-only windows contain the menu id, allowing the frontend to
+/// render the same workspace without the main navigation sidebar.
+const REPORT_WINDOW_LABEL_PREFIX: &str = "report-window-";
 
 /// Runtime copy of the close preference, updated whenever settings are saved.
 /// Keeping it in memory lets the window event apply changes without locking SQLite.
@@ -277,12 +281,69 @@ fn portable_data_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// Shows the main window only after the React application has rendered.
-/// This prevents the system from displaying the WebView's initial blank page.
+/// Shows the invoking window only after the React application has rendered.
+/// Both the main window and report-only windows start hidden so users never see
+/// WebView's initial blank document.
 #[tauri::command]
 fn show_main_window(window: WebviewWindow) -> Result<(), String> {
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
+}
+
+/// Opens one reusable report-only window for a navigation menu. Its geometry is
+/// intentionally not stored: only the main window controls portable config.
+#[tauri::command]
+async fn open_report_window(
+    menu_id: String,
+    source_window: WebviewWindow,
+    app: AppHandle,
+) -> Result<(), String> {
+    let label = format!("{REPORT_WINDOW_LABEL_PREFIX}{menu_id}");
+    let scale_factor = source_window
+        .scale_factor()
+        .map_err(|error| error.to_string())?;
+    let source_size = source_window
+        .inner_size()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale_factor);
+    let source_is_maximized = source_window.is_maximized().unwrap_or(false);
+
+    if let Some(report_window) = app.get_webview_window(&label) {
+        report_window
+            .set_size(source_size)
+            .map_err(|error| error.to_string())?;
+        if source_is_maximized {
+            report_window
+                .maximize()
+                .map_err(|error| error.to_string())?;
+        } else {
+            report_window
+                .unmaximize()
+                .map_err(|error| error.to_string())?;
+        }
+        report_window.show().map_err(|error| error.to_string())?;
+        report_window
+            .unminimize()
+            .map_err(|error| error.to_string())?;
+        return report_window.set_focus().map_err(|error| error.to_string());
+    }
+
+    // This command is async so WebView2 construction does not block Tauri's
+    // window event loop. The new window reveals itself after React is ready.
+    let report_window =
+        WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
+            .title("ReportManager - 独立报告窗口")
+            .inner_size(source_size.width, source_size.height)
+            .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+            .visible(false)
+            .build()
+            .map_err(|error| error.to_string())?;
+    if source_is_maximized {
+        report_window
+            .maximize()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -389,6 +450,12 @@ pub fn run() {
                         .save_current_window(window);
                 }
                 WindowEvent::CloseRequested { api, .. } => {
+                    // Report-only windows are ephemeral. Closing them must not
+                    // hide the main window, exit the application, or overwrite
+                    // the main window's saved geometry.
+                    if window.label() != "main" {
+                        return;
+                    }
                     // Persist the last visible desktop position before either
                     // hiding to the tray or exiting the application.
                     window
@@ -413,6 +480,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             show_main_window,
+            open_report_window,
             get_app_preferences,
             save_app_preferences,
             create_navigation_menu,

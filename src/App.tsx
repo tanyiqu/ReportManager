@@ -6,6 +6,8 @@ import {
 } from "react";
 import { DatePicker, Input, Select } from "@douyinfe/semi-ui";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import Vditor from "vditor";
 import "vditor/dist/index.css";
 import "./App.css";
@@ -64,6 +66,11 @@ type Dialog =
   | "delete"
   | "sort"
   | null;
+type ReportChange = {
+  menuId: string;
+  type: "upsert" | "delete";
+  record: ReportRecord;
+};
 
 const NS = "http://www.w3.org/2000/svg";
 const icon = (paths: string) =>
@@ -108,6 +115,9 @@ const icons = {
   ),
   zoomOut: icon(
     '<circle cx="11" cy="11" r="7"/><path d="M8 11h6M20 20l-4-4"/>',
+  ),
+  separateWindow: icon(
+    '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12"/><path d="M12 8h6v6M18 8l-8 8"/>'
   ),
 };
 const iconChoices = [
@@ -450,6 +460,7 @@ function MenuActions({
 const vditorCdn = new URL("vditor", document.baseURI).href.replace(/\/$/, "");
 const clampEditorFontScale = (value: number) =>
   Math.min(1.5, Math.max(0.8, Number(value.toFixed(1))));
+const reportWordCount = (content: string) => content.replace(/\s/g, "").length;
 
 function VditorEditor({
   record,
@@ -624,6 +635,9 @@ function VditorEditor({
       >
         {Math.round(zoom * 100)}%
       </output>
+      <output className="editor-word-count" aria-live="polite">
+        字数：{reportWordCount(record.content)}
+      </output>
       <div ref={host} className="vditor-host" aria-label="报告正文" />
     </div>
   );
@@ -672,9 +686,40 @@ function ReportWorkspace({
   const filterPopover = useRef<HTMLDivElement | null>(null);
   const recordDateButton = useRef<HTMLButtonElement | null>(null);
   const recordDatePopover = useRef<HTMLDivElement | null>(null);
+  const selectedRecord = useRef<ReportRecord | null>(null);
+  const notifyRecordChange = (type: ReportChange["type"], record: ReportRecord) => {
+    void emit("report-record-changed", { menuId: menu.id, type, record } satisfies ReportChange)
+      .catch(console.error);
+  };
   useEffect(() => {
     selectedId.current = selected?.id ?? null;
+    selectedRecord.current = selected;
   }, [selected]);
+  // Every workspace, including a report-only window, receives in-progress
+  // changes so the same report remains visually synchronized before save.
+  useEffect(() => {
+    let active = true;
+    const unlisten = listen<ReportChange>("report-record-changed", (event) => {
+      const change = event.payload;
+      if (!active || change.menuId !== menu.id) return;
+      if (change.type === "delete") {
+        setRecords((items) => items.filter((item) => item.id !== change.record.id));
+        if (selectedRecord.current?.id === change.record.id) setSelected(null);
+        return;
+      }
+      setRecords((items) => {
+        const exists = items.some((item) => item.id === change.record.id);
+        return exists
+          ? items.map((item) => item.id === change.record.id ? change.record : item)
+          : [change.record, ...items];
+      });
+      if (selectedRecord.current?.id === change.record.id) setSelected(change.record);
+    });
+    return () => {
+      active = false;
+      void unlisten.then((dispose) => dispose());
+    };
+  }, [menu.id]);
   const load = (reset: boolean) => {
     if (loading && !reset) return;
     const token = ++request.current;
@@ -744,6 +789,7 @@ function ReportWorkspace({
     };
     setRecords((items) => [record, ...items]);
     setSelected(record);
+    notifyRecordChange("upsert", record);
   };
   useEffect(() => {
     if (createOnOpen) {
@@ -764,6 +810,7 @@ function ReportWorkspace({
         setRecords((items) =>
           items.map((item) => (item.id === saved.id ? saved : item)),
         );
+        notifyRecordChange("upsert", saved);
         toast("报告已保存");
       })
       .catch((error) => {
@@ -787,6 +834,7 @@ function ReportWorkspace({
       .then((saved) => {
         setRecords((items) => [saved, ...items]);
         setSelected(saved);
+        notifyRecordChange("upsert", saved);
         toast("报告副本已创建");
       })
       .catch((error) => {
@@ -804,6 +852,7 @@ function ReportWorkspace({
           setSelected(remaining[0] ?? null);
           return remaining;
         });
+        notifyRecordChange("delete", selected);
         setDeleteConfirmOpen(false);
         toast("报告已删除");
       })
@@ -897,6 +946,7 @@ function ReportWorkspace({
         setRecords((items) =>
           items.map((item) => (item.id === saved.id ? saved : item)),
         );
+        notifyRecordChange("upsert", saved);
         setRecordDateError("");
         setDateEditorOpen(false);
         toast("报告日期已修改");
@@ -929,9 +979,24 @@ function ReportWorkspace({
           {menu.label}
           <span> · {periodName(menu.reportPeriod)}</span>
         </h1>
-        <button className="primary" onClick={create}>
-          ＋ 新建{menu.label}
-        </button>
+        <div className="report-header-actions">
+          <button
+            className="icon-button"
+            title="独立窗口"
+            aria-label={`在独立窗口中打开${menu.label}`}
+            onClick={() =>
+              void invoke("open_report_window", { menuId: menu.id }).catch((error) => {
+                console.error(error);
+                toast("无法打开独立窗口，请稍后重试。");
+              })
+            }
+          >
+            <SvgIcon svg={icons.separateWindow} />
+          </button>
+          <button className="primary" onClick={create}>
+            ＋ 新建{menu.label}
+          </button>
+        </div>
       </header>
       <section className="report-split">
         <div
@@ -1043,9 +1108,11 @@ function ReportWorkspace({
                 <div>
                   <input
                     value={selected.title}
-                    onChange={(event) =>
-                      setSelected({ ...selected, title: event.target.value })
-                    }
+                    onChange={(event) => {
+                      const next = { ...selected, title: event.target.value };
+                      setSelected(next);
+                      notifyRecordChange("upsert", next);
+                    }}
                     // Vditor handles this shortcut for the body, while the native
                     // title input needs its own handler to prevent the browser save page action.
                     onKeyDown={(event) => {
@@ -1104,9 +1171,13 @@ function ReportWorkspace({
               <VditorEditor
                 record={selected}
                 change={(content) =>
-                  setSelected((current) =>
-                    current ? { ...current, content } : current,
-                  )
+                  {
+                    const current = selectedRecord.current;
+                    if (!current) return;
+                    const next = { ...current, content };
+                    setSelected(next);
+                    notifyRecordChange("upsert", next);
+                  }
                 }
                 save={save}
               />
@@ -1184,11 +1255,30 @@ function ReportWorkspace({
   );
 }
 
+function ToastStack({
+  toasts,
+}: {
+  toasts: { id: number; message: string }[];
+}) {
+  return (
+    <div className="toast-stack" aria-live="polite">
+      {toasts.map((item) => (
+        <div key={item.id} className="toast">
+          {item.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [preferences, setPreferences] = useState<Preferences | null>(null);
   const [page, setPage] = useState("home");
   const [createOnOpen, setCreateOnOpen] = useState<string | null>(null);
   const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
+  const independentMenuId = getCurrentWebviewWindow().label.startsWith("report-window-")
+    ? getCurrentWebviewWindow().label.slice("report-window-".length)
+    : null;
   const toast = (message: string) => {
     const id = Date.now() + Math.random();
     setToasts((current) => [...current, { id, message }]);
@@ -1198,18 +1288,24 @@ export default function App() {
     );
   };
   useEffect(() => {
-    void invoke("show_main_window");
     void invoke<Preferences>("get_app_preferences")
       .then((saved) => {
         setPreferences(saved);
         const visible = saved.menus.filter((item) => !item.isHidden);
-        setPage(
-          visible.some((item) => item.id === saved.defaultPageId)
+        setPage(independentMenuId && visible.some((item) => item.id === independentMenuId)
+          ? independentMenuId
+          : visible.some((item) => item.id === saved.defaultPageId)
             ? saved.defaultPageId
-            : (visible[0]?.id ?? "home"),
-        );
+            : (visible[0]?.id ?? "home"));
       })
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => {
+        // Tauri creates every WebView hidden; wait for React's next paint so a
+        // newly opened report window never flashes its initial blank document.
+        window.requestAnimationFrame(() => {
+          void invoke("show_main_window").catch(console.error);
+        });
+      });
   }, []);
   if (!preferences)
     return <div className="app-loading">正在加载本地工作记录…</div>;
@@ -1236,6 +1332,20 @@ export default function App() {
     setCreateOnOpen("daily");
     setPage("daily");
   };
+  if (independentMenuId)
+    return isReport && active ? (
+      <main className="main-content report-content report-window-content">
+        <ReportWorkspace
+          key={active.id}
+          menu={active}
+          preferences={preferences}
+          toast={toast}
+          createOnOpen={false}
+          onCreated={() => undefined}
+        />
+        <ToastStack toasts={toasts} />
+      </main>
+    ) : <div className="app-loading">报告菜单不可用或已被隐藏。</div>;
   return (
     <div
       className={`app-shell ${preferences.sidebarCollapsed ? "sidebar-collapsed" : ""}`}
