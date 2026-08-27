@@ -460,7 +460,13 @@ function MenuActions({
 const vditorCdn = new URL("vditor", document.baseURI).href.replace(/\/$/, "");
 const clampEditorFontScale = (value: number) =>
   Math.min(1.5, Math.max(0.8, Number(value.toFixed(1))));
-const reportWordCount = (content: string) => content.replace(/\s/g, "").length;
+
+/**
+ * Counts Han characters only. Latin text, numbers, punctuation, Markdown
+ * syntax, and other symbols are deliberately excluded from the word count.
+ */
+const reportWordCount = (content: string) =>
+  content.match(/\p{Script=Han}/gu)?.length ?? 0;
 
 function VditorEditor({
   record,
