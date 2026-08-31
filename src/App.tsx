@@ -468,6 +468,32 @@ const clampEditorFontScale = (value: number) =>
 const reportWordCount = (content: string) =>
   content.match(/\p{Script=Han}/gu)?.length ?? 0;
 
+const REPORT_TRAILING_EMPTY_LINE_COUNT = 6;
+
+/**
+ * Gives a newly opened report some editable space below its existing content.
+ * Vditor uses a contenteditable `pre.vditor-reset` in WYSIWYG and IR modes;
+ * source mode has no matching `<pre>`, so it is intentionally left unchanged.
+ */
+const appendReportTrailingEmptyLines = (instance: Vditor) => {
+  const mode = instance.getCurrentMode();
+  if (mode === "sv") return;
+
+  const editorElement = instance.vditor[mode]?.element;
+  if (!editorElement?.matches("pre.vditor-reset")) return;
+
+  const emptyLines = document.createDocumentFragment();
+  for (let index = 0; index < REPORT_TRAILING_EMPTY_LINE_COUNT; index += 1) {
+    const emptyLine = document.createElement("p");
+    emptyLine.dataset.block = "0";
+    emptyLines.appendChild(emptyLine);
+  }
+  editorElement.appendChild(emptyLines);
+
+  // Keep Vditor's undo baseline aligned with the DOM users see after loading.
+  instance.clearStack();
+};
+
 function VditorEditor({
   record,
   editorMode = "wysiwyg",
@@ -539,12 +565,12 @@ function VditorEditor({
           }
         },
         after: () => {
-          loadedRecordId.current = current.id;
           const latest = recordRef.current;
           if (latest.id !== current.id) {
             editor.current?.setValue(latest.content, true);
-            loadedRecordId.current = latest.id;
           }
+          if (editor.current) appendReportTrailingEmptyLines(editor.current);
+          loadedRecordId.current = latest.id;
         },
       });
     }, 0);
@@ -561,6 +587,7 @@ function VditorEditor({
   useEffect(() => {
     if (editor.current?.vditor && loadedRecordId.current !== record.id) {
       editor.current.setValue(record.content, true);
+      appendReportTrailingEmptyLines(editor.current);
       loadedRecordId.current = record.id;
     }
   }, [record.id]);
@@ -573,27 +600,6 @@ function VditorEditor({
         if (!active) return;
         zoomLoaded.current = true;
         setZoom(clampEditorFontScale(preferences.editorFontScale));
-      })
-      .catch(console.error);
-    return () => {
-      active = false;
-    };
-  }, []);
-  // Vditor exposes display-mode changes through its toolbar rather than a public
-  // setter. Applying the persisted choice after construction keeps all report
-  // editors aligned with the global editor setting.
-  useEffect(() => {
-    let active = true;
-    void invoke<Preferences>("get_app_preferences")
-      .then((preferences) => {
-        window.setTimeout(() => {
-          if (!active) return;
-          editor.current?.vditor.toolbar?.elements?.["edit-mode"]
-            ?.querySelector<HTMLButtonElement>(
-              `button[data-mode="${preferences.editorMode}"]`,
-            )
-            ?.click();
-        }, 0);
       })
       .catch(console.error);
     return () => {
@@ -1176,6 +1182,10 @@ function ReportWorkspace({
               </div>
               <VditorEditor
                 record={selected}
+                // Initialize in the persisted mode. Reapplying the mode through
+                // a toolbar click would rerender the document and remove the six
+                // trailing empty paragraphs added by the editor's `after` hook.
+                editorMode={preferences.editorMode}
                 change={(content) =>
                   {
                     const current = selectedRecord.current;
