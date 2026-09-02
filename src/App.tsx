@@ -391,6 +391,8 @@ function MenuActions({
   remove: (item: NavigationMenu) => void;
 }) {
   const fixed = item.id === "home" || item.id === "settings";
+  // 首页的位置固定，但可以隐藏；设置必须始终保留为可访问入口。
+  const cannotHide = item.id === "settings";
   return (
     <div className="menu-actions">
       {order.map((action) => {
@@ -399,7 +401,7 @@ function MenuActions({
             <button
               key={action}
               className={`icon-button ${item.isHidden ? "is-active" : ""}`}
-              disabled={fixed}
+              disabled={cannotHide}
               title={item.isHidden ? "显示菜单" : "隐藏菜单"}
               onClick={() => toggle(item)}
             >
@@ -837,7 +839,8 @@ function ReportWorkspace({
       ...selected,
       id: crypto.randomUUID(),
       recordDate: isoDate(),
-      title: `${selected.title} - 副本`,
+      // title: `${selected.title} - 副本`,
+      title: `${selected.title}`,
       status: "draft",
       createdAt: now,
       updatedAt: now,
@@ -1531,7 +1534,7 @@ function Settings({
     setDialog("manage");
   };
   const toggle = (item: NavigationMenu) => {
-    if (item.id === "home" || item.id === "settings") return;
+    if (item.id === "settings") return;
     persist(
       {
         ...preferences,
@@ -1671,7 +1674,7 @@ function Settings({
           <div>
             <h2>菜单管理</h2>
             <p>
-              管理菜单显示、报告周期、名称和图标；首页始终置顶，设置始终置底。
+              管理菜单显示、报告周期、名称和图标；首页始终置顶且可隐藏，设置始终置底。
             </p>
           </div>
           <button className="secondary" onClick={() => setDialog("manage")}>
@@ -1740,7 +1743,7 @@ function Settings({
       {dialog === "manage" && (
         <DialogShell title="菜单管理" onClose={() => setDialog(null)}>
           <p className="dialog-description">
-            拖拽左侧手柄可调整菜单顺序；首页固定在顶部，设置固定在底部。
+            拖拽左侧手柄可调整菜单顺序；首页固定在顶部但可隐藏，设置固定在底部。
           </p>
           <SortableNavigationMenus
             menus={preferences.menus}

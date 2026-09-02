@@ -283,7 +283,8 @@ impl Database {
         let mut order = 1_i64;
         for menu in &preferences.menus {
             if menu.id == "home" {
-                transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, is_hidden = 0, sort_order = 0 WHERE id = 'home'", params![menu.label, menu.icon_svg]).map_err(|error| error.to_string())?;
+                // 首页位置固定但允许隐藏；设置仍始终可见，确保用户保留设置入口。
+                transaction.execute("UPDATE navigation_menus SET label = ?1, icon_svg = ?2, is_hidden = ?3, sort_order = 0 WHERE id = 'home'", params![menu.label, menu.icon_svg, menu.is_hidden]).map_err(|error| error.to_string())?;
             } else if menu.id == "settings" {
                 continue;
             } else {
