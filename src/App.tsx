@@ -165,17 +165,90 @@ const isValidIsoDate = (value: string) => {
   return !Number.isNaN(date.getTime()) && isoDate(date) === value;
 };
 
+/**
+ * 图标下拉框中“自定义 SVG”选项的固定值。
+ * 它不是合法 SVG，因此不会与任何预设图标（值即 SVG 源码）冲突。
+ */
+const CUSTOM_ICON_VALUE = "__custom_svg__";
+/**
+ * 自定义 SVG 无法解析时统一展示的错误图标（红色叉号）。
+ * 图标通过 CSS mask 渲染，路径中的 `fill` 不参与着色，
+ * 红色由 `.svg-icon.is-invalid` 提供，保证与错误样式一致。
+ */
+const INVALID_ICON_SVG = `<svg t="1795523828296" class="icon" viewBox="0 0 1028 1024" version="1.1" xmlns="${NS}" p-id="2711" width="32" height="32"><path d="M875.086452 153.730058C676.053818-45.302575 353.260522-45.302575 154.128323 153.730058s-199.032634 521.825929 0 720.958129 521.825929 199.032634 720.958129 0 199.032634-521.825929 0-720.958129zM725.836868 725.438604c-9.757478 9.757478-25.488922 9.757478-35.246399 0L514.557604 549.405739 338.624306 725.438604c-9.757478 9.757478-25.488922 9.757478-35.2464 0s-9.757478-25.488922 0-35.2464l176.032865-176.032864-176.032865-175.933299c-9.757478-9.757478-9.757478-25.488922 0-35.246399 9.757478-9.757478 25.488922-9.757478 35.2464 0l176.032864 176.032865 176.032865-176.032865c9.757478-9.757478 25.488922-9.757478 35.246399 0 9.757478 9.757478 9.757478 25.488922 0 35.246399L549.804004 514.15934 725.836868 690.192204c9.657912 9.757478 9.657912 25.488922 0 35.2464z" fill="#F56C6C" p-id="2712"></path></svg>`;
+
+const svgParser = new DOMParser();
+const svgSerializer = new XMLSerializer();
+// 图标在侧边栏、菜单列表和预览区会被反复渲染，缓存解析结果避免重复解析。
+const svgParseCache = new Map<string, string | null>();
+
+/**
+ * 单个 SVG 的解析实现（不带缓存）。
+ *
+ * 图标最终以 data URI 形式交给 CSS mask，因此必须满足：
+ * 1. 能被 XML 解析器完整解析，否则 mask 会静默失效并显示为空白；
+ * 2. 根节点是 `<svg>` 且至少包含一个可见图形节点；
+ * 3. 补齐 `xmlns`，保证 data URI 内的 SVG 处在正确的命名空间下。
+ *
+ * 返回 `null` 表示这段代码无法作为图标使用，调用方应展示错误样式。
+ */
+const parseSvgIconUncached = (source: string): string | null => {
+  if (!source) return null;
+  const parsed = svgParser.parseFromString(source, "image/svg+xml");
+  // 解析失败时浏览器会返回包含 parsererror 节点的文档。
+  if (parsed.querySelector("parsererror")) return null;
+  const root = parsed.documentElement;
+  // XML 区分大小写：`<SVG>` 不是可渲染的 SVG 元素，按解析失败处理。
+  if (!root || root.localName !== "svg") return null;
+  // 只有 defs/style 等非可视节点的 SVG 画不出任何内容，同样视为不可用。
+  if (!root.querySelector("path,circle,rect,ellipse,line,polyline,polygon,text,use,image,g"))
+    return null;
+  if (!root.getAttribute("xmlns")) root.setAttribute("xmlns", NS);
+  return svgSerializer.serializeToString(root);
+};
+
+/**
+ * 校验并规范化一段自定义 SVG 代码，成功时返回可直接保存的 SVG 字符串。
+ * 用户持续输入会产生大量键值，缓存达到上限后整体清空，避免长期占用内存。
+ */
+const parseSvgIcon = (raw: string): string | null => {
+  const source = raw.trim();
+  if (svgParseCache.has(source)) return svgParseCache.get(source) ?? null;
+  if (svgParseCache.size > 200) svgParseCache.clear();
+  const result = parseSvgIconUncached(source);
+  svgParseCache.set(source, result);
+  return result;
+};
+
+/**
+ * 图标比对只看绘制路径（`d` 属性），因此数据库中早期写入的精简版图标
+ * （省略了 `stroke-linecap` 等表现属性）仍能匹配到对应的预设图标。
+ */
+const iconSignature = (svg: string) => {
+  const paths = Array.from(svg.matchAll(/\sd="([^"]*)"/g)).map((match) =>
+    match[1].replace(/\s+/g, " ").trim(),
+  );
+  return paths.length > 0 ? paths.join("|") : svg.trim();
+};
+
+/** 找出与给定 SVG 绘制内容一致的预设图标。 */
+const matchIconChoice = (svg: string) => {
+  const signature = iconSignature(svg);
+  return iconChoices.find((item) => iconSignature(item.svg) === signature);
+};
+
 function SvgIcon({ svg }: { svg: string }) {
-  const complete = /<svg\b[^>]*\bxmlns=/.test(svg)
-    ? svg
-    : svg.replace(/<svg\b/, `<svg xmlns="${NS}"`);
-  const bytes = new TextEncoder().encode(complete);
+  // 图标可能来自历史数据或被手工修改的数据库，无法解析时回退到错误图标，
+  // 让用户明确知道该图标不可用，而不是留下一个无法解释的空白。
+  const parsed = parseSvgIcon(svg);
+  const resolved = parsed ?? INVALID_ICON_SVG;
+  const bytes = new TextEncoder().encode(resolved);
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   const image = `url("data:image/svg+xml;base64,${btoa(binary)}")`;
   return (
     <span
-      className="svg-icon"
+      className={`svg-icon${parsed ? "" : " is-invalid"}`}
       aria-hidden="true"
       style={{ WebkitMaskImage: image, maskImage: image }}
     />
@@ -1497,6 +1570,81 @@ function Home({ onCreate }: { onCreate: () => void }) {
   );
 }
 
+// 下拉选择统一使用 Semi Select，避免设置页和对话框出现原生控件样式差异。
+const selectValue = (value: unknown) => String(value ?? "");
+
+/**
+ * 菜单图标选择器：预设图标与“自定义 SVG”共用一个下拉框。
+ *
+ * 选中“自定义 SVG”后展开代码输入框，并实时预览解析结果；解析失败时预览区
+ * 显示统一的错误图标，调用方据此禁用保存，避免把不可用的代码写入数据库。
+ */
+function MenuIconPicker({
+  value,
+  custom,
+  onValueChange,
+  onCustomChange,
+}: {
+  /** 下拉框当前值：预设图标的 SVG 源码或 CUSTOM_ICON_VALUE。 */
+  value: string;
+  /** 自定义 SVG 的原始输入内容（仅在自定义模式下有意义）。 */
+  custom: string;
+  onValueChange: (value: string) => void;
+  onCustomChange: (value: string) => void;
+}) {
+  const customizing = value === CUSTOM_ICON_VALUE;
+  const parsed = customizing ? parseSvgIcon(custom) : value;
+  const previewLabel = customizing
+    ? parsed
+      ? "自定义 SVG 预览"
+      : "SVG 代码无法解析"
+    : matchIconChoice(value)?.name ?? "当前图标";
+  const error = customizing
+    ? !custom.trim()
+      ? "请输入 SVG 代码。"
+      : parsed
+        ? ""
+        : "无法解析这段 SVG 代码，请检查代码是否完整。"
+    : "";
+  return (
+    <div className="icon-picker">
+      <div className={`icon-preview${parsed ? "" : " is-invalid"}`}>
+        <SvgIcon svg={parsed ?? custom} />
+        <span>{previewLabel}</span>
+      </div>
+      <Select
+        className="settings-select"
+        value={value}
+        optionList={[
+          ...iconChoices.map((item) => ({ value: item.svg, label: item.name })),
+          // 固定追加在最后一个选项之后：允许用户输入自己的 SVG 图标代码。
+          { value: CUSTOM_ICON_VALUE, label: "自定义 SVG" },
+        ]}
+        onChange={(next) => onValueChange(selectValue(next))}
+      />
+      {customizing && (
+        <>
+          <textarea
+            className="svg-icon-input"
+            value={custom}
+            spellCheck={false}
+            placeholder={'粘贴或输入完整的 SVG 代码，例如：<svg viewBox="0 0 24 24">…</svg>'}
+            onChange={(event) => onCustomChange(event.target.value)}
+          />
+          <small className="dialog-hint">
+            SVG 代码随菜单配置一同保存到本地数据库，仅用于显示图标。
+          </small>
+          {error && (
+            <span className="svg-validation" role="alert">
+              {error}
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Settings({
   preferences,
   persist,
@@ -1511,12 +1659,22 @@ function Settings({
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selected, setSelected] = useState<NavigationMenu | null>(null);
   const [label, setLabel] = useState("");
+  /** 图标下拉框当前值：预设图标的 SVG 源码或 CUSTOM_ICON_VALUE。 */
   const [svg, setSvg] = useState(icons.daily);
+  /** 自定义 SVG 的原始输入内容，选择预设图标时保持为空。 */
+  const [customSvg, setCustomSvg] = useState("");
   const [period, setPeriod] = useState<ReportPeriod>("daily");
+  // 保存前统一解析成最终写入数据库的 SVG；解析失败时为 null，用于禁用保存按钮。
+  const resolvedIconSvg =
+    svg === CUSTOM_ICON_VALUE ? parseSvgIcon(customSvg) : svg;
   const edit = (menu: NavigationMenu, type: "rename" | "icon" | "period") => {
     setSelected(menu);
     setLabel(menu.label);
-    setSvg(menu.iconSvg);
+    // 与预设图标绘制内容一致的直接回显；其余图标（自定义代码、内置菜单的
+    // 默认图标）统一进入自定义模式，避免下拉框把 SVG 源码当成文字显示。
+    const preset = matchIconChoice(menu.iconSvg);
+    setSvg(preset?.svg ?? CUSTOM_ICON_VALUE);
+    setCustomSvg(preset ? "" : menu.iconSvg);
     setPeriod(menu.reportPeriod);
     setDialog(type);
   };
@@ -1547,11 +1705,11 @@ function Settings({
   };
   const add = () => {
     const name = label.trim();
-    if (!name) return;
+    if (!name || !resolvedIconSvg) return;
     const menu: NavigationMenu = {
       id: `custom-${crypto.randomUUID()}`,
       label: name,
-      iconSvg: svg,
+      iconSvg: resolvedIconSvg,
       sortOrder: preferences.menus.length - 1,
       isSystem: false,
       isHidden: false,
@@ -1591,8 +1749,6 @@ function Settings({
         "报告加载设置已更新",
       );
   };
-  // 下拉选择统一使用 Semi Select，避免设置页和对话框出现原生控件样式差异。
-  const selectValue = (value: unknown) => String(value ?? "");
   return (
     <div className="page-stack settings-page">
       <section className="panel settings">
@@ -1767,6 +1923,7 @@ function Settings({
               onClick={() => {
                 setLabel("");
                 setSvg(icons.daily);
+                setCustomSvg("");
                 setDialog("add");
               }}
             >
@@ -1808,21 +1965,22 @@ function Settings({
           </label>
           <label className="dialog-field">
             菜单图标
-            <Select
-              className="settings-select"
+            <MenuIconPicker
               value={svg}
-              optionList={iconChoices.map((item) => ({
-                value: item.svg,
-                label: item.name,
-              }))}
-              onChange={(value) => setSvg(selectValue(value))}
+              custom={customSvg}
+              onValueChange={setSvg}
+              onCustomChange={setCustomSvg}
             />
           </label>
           <div className="dialog-actions">
             <button className="secondary" onClick={() => setDialog("manage")}>
               取消
             </button>
-            <button className="primary" disabled={!label.trim()} onClick={add}>
+            <button
+              className="primary"
+              disabled={!label.trim() || !resolvedIconSvg}
+              onClick={add}
+            >
               添加菜单
             </button>
           </div>
@@ -1858,14 +2016,11 @@ function Settings({
         <DialogShell title="修改菜单图标" onClose={() => setDialog("manage")}>
           <label className="dialog-field">
             菜单图标
-            <Select
-              className="settings-select"
+            <MenuIconPicker
               value={svg}
-              optionList={iconChoices.map((item) => ({
-                value: item.svg,
-                label: item.name,
-              }))}
-              onChange={(value) => setSvg(selectValue(value))}
+              custom={customSvg}
+              onValueChange={setSvg}
+              onCustomChange={setCustomSvg}
             />
           </label>
           <div className="dialog-actions">
@@ -1874,7 +2029,10 @@ function Settings({
             </button>
             <button
               className="primary"
-              onClick={() => saveMenu({ iconSvg: svg }, "菜单图标已更新")}
+              disabled={!resolvedIconSvg}
+              onClick={() =>
+                saveMenu({ iconSvg: resolvedIconSvg! }, "菜单图标已更新")
+              }
             >
               保存
             </button>

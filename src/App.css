@@ -55,3 +55,15 @@
 .semi-select-option-list-wrapper .semi-select-option-selected{background:#eef5ff;color:#266bdc;font-weight:600}
 .semi-select-option-list-wrapper .semi-select-option-selected:hover,.semi-select-option-list-wrapper .semi-select-option-selected.semi-select-option-focused{background:#e2efff;color:#2367df}
 main.main-content.report-content.report-window-content{ height: 100%;}
+
+/* 自定义 SVG 图标：选择“自定义 SVG”后展开代码输入框，并实时预览解析结果。 */
+.icon-picker{display:grid;gap:8px}
+.icon-preview{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px dashed #d6dfeb;border-radius:8px;background:#fbfcfe;color:#526278;font-size:13px;font-weight:400}
+.icon-preview .svg-icon{flex:0 0 22px;width:22px;height:22px;color:#35465c}
+.icon-preview.is-invalid{border-color:#ffd4d4;background:#fff5f5;color:#c23636}
+/* 图标通过 mask 着色，错误图标用背景色呈现源码中的红色叉号，而不是依赖 fill。 */
+.svg-icon.is-invalid{background-color:#f56c6c}
+.svg-icon-input{width:100%;min-height:132px;padding:10px 12px;border:1px solid #d6dfeb;border-radius:8px;background:#fff;color:#26364b;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;font-weight:400;line-height:1.65;resize:vertical;transition:border-color .15s,box-shadow .15s}
+.svg-icon-input:focus{outline:0;border-color:#6d9ef5;box-shadow:0 0 0 3px #e8f0ff}
+.dialog-hint{color:#78869a;font-size:12px;font-weight:400;line-height:1.6}
+.svg-validation{display:block;width:max-content;max-width:100%;padding:6px 9px;border-radius:6px;background:#fff1f1;color:#bb3030;font-size:12px;font-weight:600}
